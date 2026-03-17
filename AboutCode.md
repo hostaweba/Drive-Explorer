@@ -59,3 +59,35 @@ The `InternalViewer` dynamically checks file extensions and instantiates the app
 * `ScaledImageLabel` for graphics.
 * `QPlainTextEdit` for text/code (truncating at 2MB to prevent memory exhaustion).
 * `QMediaPlayer` and `QVideoWidget` for audio/video playback (if OS codecs are present).
+
+# Architecture Evaluation: Pros and Cons
+
+This document outlines the technical strengths and limitations of the Drive Explorer application based on its current codebase and design patterns.
+
+## ✅ Pros (Strengths)
+
+* **Highly Optimized Database Engine:** By using SQLite with aggressive pragmas (`WAL` mode, 256MB `mmap_size`, and in-memory temp stores), the application overcomes standard file system bottlenecks, allowing instant querying of massive offline storage arrays.
+
+* **Non-Blocking UI (Concurrency):** The architecture strictly separates I/O and heavy SQL math from the main thread. Using `ThreadPoolExecutor` for disk scanning and `QThread` for background SQL/chart processing ensures the PySide6 GUI remains responsive at 60FPS.
+
+* **Virtualization Safety:** The MySpace Sandbox operates entirely on an adjacency-list SQL model (`parent_path`, `name`). This allows users to reorganize, rename, and resolve conflicts safely without risking data loss on the physical disk.
+
+* **Powerful In-Memory Filtering:** The `FastTableModel` architecture caches the current directory's rows in memory. Filtering via the search bar manipulates this internal list instantly without executing a new `SELECT` query for every keystroke.
+
+* **Extensive Duplicate Detection:** The SQL Comparison engine natively handles complex cross-drive set theory (e.g., finding identical SHA hashes with different relative paths) cleanly via SQL subqueries rather than loading data into Python RAM.
+
+* **Offline First & Portable:** Designed to operate completely offline. Drive catalogs can be exported and imported seamlessly via CSV files, making it easy to share drive indexes across different machines.
+
+## ❌ Cons (Limitations & Bottlenecks)
+
+* **Monolithic Code Structure:** The entire application (UI, threading, database logic, viewers) is contained within a single massive Python file. This violates the Single Responsibility Principle and makes testing, debugging, and maintaining the codebase exceptionally difficult.
+
+* **Memory Intensive Rendering:** While `FastTableModel` is quick, storing tens of thousands of rows containing string data, QIcons, and metadata directly in Python memory can cause RAM bloat on extremely large directories.
+
+* **SHA-256 Hashing Overhead:** Computing cryptographic hashes for every file during the scan process is inherently slow and bottlenecked by the physical disk's read speed. Large mechanical HDDs will take significant time to index.
+
+* **Lack of Real-Time Syncing:** The catalog is a static snapshot. If a file is modified, deleted, or moved natively via the OS (e.g., Windows Explorer), the database becomes out of sync until a manual re-scan is triggered. It lacks an OS-level file watcher (like `watchdog`).
+
+* **Heavy Dependency Footprint:** Importing `pandas`, `matplotlib`, and `PySide6.QtMultimedia` results in a very large application binary if compiled (e.g., via PyInstaller). It requires significant overhead just to launch the environment.
+
+* **SQLite Concurrency Limits:** Although `WAL` mode helps, SQLite is ultimately a file-based database. If multiple background threads attempt heavy `INSERT` operations while a heavy `SELECT` comparison is running, Python's `sqlite3` driver may still encounter `database is locked` errors under extreme edge cases.
