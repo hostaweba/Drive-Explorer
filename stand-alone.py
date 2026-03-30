@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Drive Explorer 
-Unrestricted Search, Native Viewers, Custom Icons, Full Sandbox, Drive Overlap Analysis, Timeline Diary
+
 """
 from __future__ import annotations
 import csv
@@ -163,16 +163,25 @@ def age_from_date(d: date) -> Tuple[str, int]:
     return (" ".join(parts) if parts else "0d", days_total)
 
 
-# ---------------- Advanced Internal Viewer (PRO UPGRADE) ----------------
-from PySide6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QSlider
-from PySide6.QtGui import QWheelEvent
-from PySide6.QtCore import QTime
+
+
+# ---------------- Advanced Internal Viewer ----------------
+import random
+import os
+import sys
+from PySide6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QSlider, QProgressBar
+from PySide6.QtGui import QWheelEvent, QPainter, QPixmap, QFont, QKeySequence, QShortcut
+from PySide6.QtCore import QTime, Qt, QTimer, QUrl
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PySide6.QtMultimediaWidgets import QVideoWidget
 
 # Smart Category Definitions
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".ico"}
 VID_EXTS = {".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".webm"}
 AUD_EXTS = {".mp3", ".wav", ".aac", ".ogg", ".flac", ".m4a", ".wma"}
 TXT_EXTS = {".txt", ".log", ".csv", ".py", ".json", ".xml", ".ini", ".md", ".html", ".css", ".js", ".c", ".cpp"}
+
+
 
 
 class ScaledImageLabel(QLabel):
@@ -205,8 +214,9 @@ class ScaledImageLabel(QLabel):
             painter.drawPixmap((self.width() - scaled.width()) // 2, (self.height() - scaled.height()) // 2, scaled)
 
 
+
 class DedicatedImageViewer(QGraphicsView):
-    """Pro Image Viewer with Zoom, Pan, and Rotation."""
+    """Pro Image Viewer with Perfect Fit, Zoom, Pan, Rotation, and Flip."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.scene = QGraphicsScene(self)
@@ -216,15 +226,17 @@ class DedicatedImageViewer(QGraphicsView):
         
         self.setRenderHint(QPainter.Antialiasing)
         self.setRenderHint(QPainter.SmoothPixmapTransform)
-        self.setDragMode(QGraphicsView.ScrollHandDrag) # Click and drag to pan
-        self.setStyleSheet("background-color: #1e1e1e; border: none;")
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setFrameShape(QGraphicsView.NoFrame)
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setStyleSheet("background-color: #121212; border: none;")
         self.zoom_factor = 1.0
 
     def load_file(self, filepath):
         pixmap = QPixmap(filepath)
         self.pixmap_item.setPixmap(pixmap)
         self.scene.setSceneRect(self.pixmap_item.boundingRect())
-        self.reset_view()
+        QTimer.singleShot(10, self.reset_view)
 
     def reset_view(self):
         self.zoom_factor = 1.0
@@ -238,8 +250,11 @@ class DedicatedImageViewer(QGraphicsView):
     def rotate_image(self):
         self.rotate(90)
 
+    def flip_image(self, horizontal=True):
+        if horizontal: self.scale(-1, 1)
+        else: self.scale(1, -1)
+
     def wheelEvent(self, event: QWheelEvent):
-        """Ctrl + Scroll to zoom natively"""
         if event.modifiers() == Qt.ControlModifier:
             if event.angleDelta().y() > 0: self.zoom(1.15)
             else: self.zoom(0.85)
@@ -247,10 +262,11 @@ class DedicatedImageViewer(QGraphicsView):
             super().wheelEvent(event)
 
 class DedicatedMediaViewer(QWidget):
-    """Pro Media Player with Timeline, Seek, and Volume Controls."""
-    def __init__(self, is_video=True, parent=None):
+    """Pro Media Player with Timeline, Seek, Volume, Mute, Loop, and Shuffle."""
+    def __init__(self, is_video=True, parent_viewer=None, parent=None):
         super().__init__(parent)
         self.is_video = is_video
+        self.parent_viewer = parent_viewer 
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
         
@@ -258,61 +274,95 @@ class DedicatedMediaViewer(QWidget):
         self.audio_output = QAudioOutput()
         self.player.setAudioOutput(self.audio_output)
         
-        # 1. Video/Audio Display Area
+        self.is_repeat = False
+        self.is_shuffle = False
+        self.is_muted = False
+        
         if self.is_video:
             self.video_widget = QVideoWidget()
             self.player.setVideoOutput(self.video_widget)
             self.layout.addWidget(self.video_widget, stretch=1)
         else:
-            self.audio_lbl = QLabel("🎵\nAudio Playback Active")
+            self.audio_lbl = QLabel("🎵\nLoading Audio...")
             self.audio_lbl.setAlignment(Qt.AlignCenter)
-            self.audio_lbl.setStyleSheet("background-color: #1e1e1e; color: #4da6ff; font-size: 36px; font-weight: bold;")
+            self.audio_lbl.setStyleSheet("background-color: #1a1a1a; color: #4da6ff; font-size: 28px; font-weight: bold; border-radius: 10px;")
             self.layout.addWidget(self.audio_lbl, stretch=1)
 
-        # 2. Timeline Slider & Time Labels
+        self.controls_container = QWidget()
+        self.controls_layout = QVBoxLayout(self.controls_container)
+        self.controls_layout.setContentsMargins(5,5,5,5)
+
         time_layout = QHBoxLayout()
         self.lbl_current = QLabel("00:00")
-        self.lbl_current.setStyleSheet("color: #d4d4d4;")
-        
+        self.lbl_current.setStyleSheet("color: #d4d4d4; font-weight: bold;")
         self.slider = QSlider(Qt.Horizontal)
+        self.slider.setStyleSheet("QSlider::handle:horizontal { background: #4da6ff; width: 14px; margin: -4px 0; border-radius: 7px; } QSlider::groove:horizontal { background: #444; height: 6px; border-radius: 3px; }")
         self.slider.setRange(0, 0)
         self.slider.sliderMoved.connect(self.set_position)
-        
         self.lbl_total = QLabel("00:00")
-        self.lbl_total.setStyleSheet("color: #d4d4d4;")
+        self.lbl_total.setStyleSheet("color: #d4d4d4; font-weight: bold;")
         
         time_layout.addWidget(self.lbl_current)
         time_layout.addWidget(self.slider)
         time_layout.addWidget(self.lbl_total)
-        self.layout.addLayout(time_layout)
+        self.controls_layout.addLayout(time_layout)
 
-        # 3. Media Controls
         ctrl_layout = QHBoxLayout()
-        self.btn_play = QPushButton("▶ Play")
-        self.btn_play.clicked.connect(self.toggle_playback)
-        self.btn_stop = QPushButton("⏹ Stop")
-        self.btn_stop.clicked.connect(self.player.stop)
+        self.btn_shuffle = QPushButton("🔀")
+        self.btn_shuffle.setCheckable(True)
+        self.btn_shuffle.setToolTip("Shuffle")
+        self.btn_shuffle.clicked.connect(self.toggle_shuffle)
         
+        self.btn_play = QPushButton("▶ Play")
+        self.btn_play.setMinimumWidth(100)
+        self.btn_play.clicked.connect(self.toggle_playback)
+        
+        self.btn_repeat = QPushButton("🔁")
+        self.btn_repeat.setCheckable(True)
+        self.btn_repeat.setToolTip("Repeat")
+        self.btn_repeat.clicked.connect(self.toggle_repeat)
+
+        self.btn_mute = QPushButton("🔊")
+        self.btn_mute.setToolTip("Mute")
+        self.btn_mute.clicked.connect(self.toggle_mute)
+        
+        ctrl_layout.addWidget(self.btn_shuffle)
         ctrl_layout.addStretch()
         ctrl_layout.addWidget(self.btn_play)
-        ctrl_layout.addWidget(self.btn_stop)
         ctrl_layout.addStretch()
-        self.layout.addLayout(ctrl_layout)
+        ctrl_layout.addWidget(self.btn_mute)
+        ctrl_layout.addWidget(self.btn_repeat)
+        self.controls_layout.addLayout(ctrl_layout)
+        self.layout.addWidget(self.controls_container)
 
-        # Connect Signals
         self.player.positionChanged.connect(self.position_changed)
         self.player.durationChanged.connect(self.duration_changed)
         self.player.playbackStateChanged.connect(self.state_changed)
+        self.player.mediaStatusChanged.connect(self.status_changed)
 
-    def load_file(self, filepath):
+    def load_file(self, filepath, filename=""):
+        if not self.is_video:
+            self.audio_lbl.setText(f"🎵\n{filename}")
         self.player.setSource(QUrl.fromLocalFile(filepath))
         self.player.play()
 
     def toggle_playback(self):
-        if self.player.playbackState() == QMediaPlayer.PlayingState:
-            self.player.pause()
-        else:
-            self.player.play()
+        if self.player.playbackState() == QMediaPlayer.PlayingState: self.player.pause()
+        else: self.player.play()
+
+    def toggle_shuffle(self):
+        self.is_shuffle = self.btn_shuffle.isChecked()
+        self.btn_shuffle.setStyleSheet("background-color: #0e639c;" if self.is_shuffle else "")
+
+    def toggle_repeat(self):
+        self.is_repeat = self.btn_repeat.isChecked()
+        self.btn_repeat.setStyleSheet("background-color: #0e639c;" if self.is_repeat else "")
+
+    def toggle_mute(self):
+        self.is_muted = not self.is_muted
+        self.audio_output.setMuted(self.is_muted)
+        self.btn_mute.setText("🔇" if self.is_muted else "🔊")
+        self.btn_mute.setStyleSheet("background-color: #c0392b;" if self.is_muted else "")
 
     def seek(self, seconds):
         new_pos = max(0, min(self.player.position() + (seconds * 1000), self.player.duration()))
@@ -321,6 +371,7 @@ class DedicatedMediaViewer(QWidget):
     def change_volume(self, delta):
         new_vol = max(0.0, min(1.0, self.audio_output.volume() + delta))
         self.audio_output.setVolume(new_vol)
+        if self.is_muted: self.toggle_mute() # Unmute on volume change
 
     def set_position(self, position):
         self.player.setPosition(position)
@@ -337,6 +388,14 @@ class DedicatedMediaViewer(QWidget):
         if state == QMediaPlayer.PlayingState: self.btn_play.setText("⏸ Pause")
         else: self.btn_play.setText("▶ Play")
 
+    def status_changed(self, status):
+        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            if self.is_repeat:
+                self.player.setPosition(0)
+                self.player.play()
+            elif self.parent_viewer:
+                self.parent_viewer.next_file()
+
     def format_time(self, ms):
         s = ms // 1000
         m, s = divmod(s, 60)
@@ -348,7 +407,6 @@ class DedicatedMediaViewer(QWidget):
         self.player.stop()
 
 class DedicatedTextViewer(QPlainTextEdit):
-    """Pro Text/Code Reader."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
@@ -359,7 +417,7 @@ class DedicatedTextViewer(QPlainTextEdit):
         try:
             with open(filepath, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read(2 * 1024 * 1024) 
-                if f.read(1): content += "\n\n... [FILE TRUNCATED FOR PREVIEW. OPEN EXTERNALLY FOR FULL FILE] ..."
+                if f.read(1): content += "\n\n... [FILE TRUNCATED] ..."
                 self.setPlainText(content)
         except Exception as e:
             self.setPlainText(f"Failed to read file: {e}")
@@ -370,46 +428,147 @@ class InternalViewer(QDialog):
         self.table_view = table_view
         self.model = table_view.model()
         
+        self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint)
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        
         self.setWindowTitle("Smart Dedicated Viewer")
         self.resize(1100, 850)
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0,0,0,0)
         self.layout.setSpacing(0)
+        self.setStyleSheet("QDialog { background-color: #121212; }")
         
+        # Stylish Autoplay Progress Bar (Hidden by default)
+        self.slideshow_bar = QProgressBar()
+        self.slideshow_bar.setFixedHeight(4)
+        self.slideshow_bar.setTextVisible(False)
+        self.slideshow_bar.setStyleSheet("QProgressBar { background-color: #121212; border: none; } QProgressBar::chunk { background-color: #8e44ad; border-radius: 2px; }")
+        self.slideshow_bar.setVisible(False)
+        self.layout.addWidget(self.slideshow_bar)
+
         self.content_widget = QWidget()
         self.content_layout = QVBoxLayout(self.content_widget)
         self.content_layout.setContentsMargins(0,0,0,0)
         self.layout.addWidget(self.content_widget, stretch=1)
         
-        # Bottom Navigation Bar
-        nav_container = QWidget()
-        nav_container.setStyleSheet("background-color: #2d2d30; padding: 5px;")
-        nav_layout = QHBoxLayout(nav_container)
+        # Universal Navigation Bar
+        self.nav_container = QWidget()
+        self.nav_container.setStyleSheet("background-color: #252526; padding: 8px;")
+        nav_layout = QHBoxLayout(self.nav_container)
+        nav_layout.setContentsMargins(5,5,5,5)
         
-        self.btn_prev = QPushButton("◀ Prev (PageUp)")
-        self.btn_next = QPushButton("Next (PageDown) ▶")
+        self.btn_close = QPushButton("✖ Close")
+        self.btn_close.setStyleSheet("background-color: #c0392b; color: white; font-weight: bold; border-radius: 4px; padding: 5px 15px;")
+        self.btn_close.clicked.connect(self.close)
+        
+        self.btn_prev = QPushButton("◀ Prev")
+        self.btn_next = QPushButton("Next ▶")
+        
         self.lbl_info = QLabel("")
-        self.lbl_info.setStyleSheet("color: white; font-weight: bold;")
+        self.lbl_info.setStyleSheet("color: #ecf0f1; font-weight: bold; font-size: 13px;")
         self.lbl_info.setAlignment(Qt.AlignCenter)
         
+        self.btn_open_ext = QPushButton("↗ Open Externally")
+        self.btn_open_ext.setStyleSheet("background-color: #2980b9; color: white; border-radius: 4px; padding: 5px 10px;")
+        self.btn_open_ext.clicked.connect(self.open_current_externally)
+
         self.btn_prev.clicked.connect(self.prev_file)
         self.btn_next.clicked.connect(self.next_file)
         
+        nav_layout.addWidget(self.btn_close)
         nav_layout.addWidget(self.btn_prev)
         nav_layout.addWidget(self.lbl_info, stretch=1)
         nav_layout.addWidget(self.btn_next)
-        self.layout.addWidget(nav_container)
+        nav_layout.addWidget(self.btn_open_ext)
+        self.layout.addWidget(self.nav_container)
         
         self.current_player = None
         self.active_category = None
         self.valid_rows = []
         self.current_valid_index = 0
+        self.ui_hidden = False
         
+        # Smooth Animated Slideshow Logic
+        self.slideshow_timer = QTimer(self)
+        self.slideshow_timer.setInterval(50) # 50ms smooth animation tick
+        self.slideshow_timer.timeout.connect(self._animate_slideshow)
+        self.is_slideshow = False
+        self.slideshow_progress = 0
+        self.slideshow_max = 70 # 70 ticks * 50ms = 3.5 seconds per slide
+        self.slideshow_bar.setMaximum(self.slideshow_max)
+        
+        self._dynamic_shortcuts = []
+        self.current_filepath = ""
+        
+        self._setup_global_shortcuts()
         self._setup_smart_playlist(start_row)
         self.load_file()
 
+    def _setup_global_shortcuts(self):
+        QShortcut(QKeySequence(Qt.Key_F11), self, self.toggle_fullscreen)
+        QShortcut(QKeySequence(Qt.Key_Escape), self, self.handle_escape)
+        QShortcut(QKeySequence(Qt.Key_H), self, self.toggle_ui)
+        QShortcut(QKeySequence(Qt.Key_B), self, self.hide) 
+        QShortcut(QKeySequence(Qt.Key_PageDown), self, self.next_file)
+        QShortcut(QKeySequence(Qt.Key_PageUp), self, self.prev_file)
+
+    def _apply_dynamic_shortcuts(self):
+        for sc in self._dynamic_shortcuts:
+            sc.setEnabled(False)
+            sc.deleteLater()
+        self._dynamic_shortcuts.clear()
+
+        if isinstance(self.current_player, DedicatedImageViewer):
+            self._dynamic_shortcuts.extend([
+                QShortcut(QKeySequence(Qt.Key_Right), self, self.next_file),
+                QShortcut(QKeySequence(Qt.Key_Left), self, self.prev_file),
+                QShortcut(QKeySequence(Qt.Key_Plus), self, lambda: self.current_player.zoom(1.15)),
+                QShortcut(QKeySequence(Qt.Key_Equal), self, lambda: self.current_player.zoom(1.15)),
+                QShortcut(QKeySequence(Qt.Key_Minus), self, lambda: self.current_player.zoom(0.85)),
+                QShortcut(QKeySequence(Qt.Key_0), self, self.current_player.reset_view),
+                QShortcut(QKeySequence(Qt.Key_R), self, self.current_player.rotate_image),
+                QShortcut(QKeySequence(Qt.Key_F), self, lambda: self.current_player.flip_image(True)),
+                QShortcut(QKeySequence("Shift+F"), self, lambda: self.current_player.flip_image(False)),
+                QShortcut(QKeySequence(Qt.Key_S), self, self.toggle_slideshow)
+            ])
+        elif isinstance(self.current_player, DedicatedMediaViewer):
+            self._dynamic_shortcuts.extend([
+                QShortcut(QKeySequence(Qt.Key_Right), self, self.next_file),
+                QShortcut(QKeySequence(Qt.Key_Left), self, self.prev_file),
+                QShortcut(QKeySequence("Shift+Right"), self, lambda: self.current_player.seek(5)), 
+                QShortcut(QKeySequence("Shift+Left"), self, lambda: self.current_player.seek(-5)),
+                QShortcut(QKeySequence(Qt.Key_Up), self, lambda: self.current_player.change_volume(0.1)),
+                QShortcut(QKeySequence(Qt.Key_Down), self, lambda: self.current_player.change_volume(-0.1)),
+                QShortcut(QKeySequence(Qt.Key_M), self, self.current_player.toggle_mute),
+                QShortcut(QKeySequence(Qt.Key_Space), self, self.current_player.toggle_playback)
+            ])
+
+    def toggle_slideshow(self):
+        self.is_slideshow = not self.is_slideshow
+        self.slideshow_bar.setVisible(self.is_slideshow)
+        if self.is_slideshow:
+            self.slideshow_progress = 0
+            self.slideshow_timer.start()
+        else:
+            self.slideshow_timer.stop()
+
+    def _animate_slideshow(self):
+        """Smoothly animates the progress bar and changes image when full"""
+        self.slideshow_progress += 1
+        self.slideshow_bar.setValue(self.slideshow_progress)
+        if self.slideshow_progress >= self.slideshow_max:
+            self.slideshow_progress = 0
+            self.next_file()
+
+    def open_current_externally(self):
+        if self.current_filepath and os.path.exists(self.current_filepath):
+            try:
+                if sys.platform=="win32": os.startfile(self.current_filepath)
+                elif sys.platform=="darwin": os.system(f"open '{self.current_filepath}'")
+                else: os.system(f"xdg-open '{self.current_filepath}'")
+            except Exception: pass
+
     def _setup_smart_playlist(self, start_row):
-        """Locks the playlist to ONLY cycle through files of the exact same category."""
         start_data = self.model.filtered_rows[start_row]
         start_ext = start_data.get("ext_meta", "").lower()
         if not start_ext and start_data.get("display"):
@@ -419,7 +578,7 @@ class InternalViewer(QDialog):
         elif start_ext in VID_EXTS: self.active_category = VID_EXTS
         elif start_ext in AUD_EXTS: self.active_category = AUD_EXTS
         elif start_ext in TXT_EXTS: self.active_category = TXT_EXTS
-        else: self.active_category = None # Fallback for unknown files
+        else: self.active_category = None
 
         for idx, row in enumerate(self.model.filtered_rows):
             if row.get("is_folder_meta", False): continue
@@ -430,50 +589,42 @@ class InternalViewer(QDialog):
         try: self.current_valid_index = self.valid_rows.index(start_row)
         except ValueError: self.current_valid_index = 0
 
-    def keyPressEvent(self, event):
-        """Intelligent Keyboard Routing"""
-        key = event.key()
-        
-        # 1. Global Navigation (PageUp / PageDown change files reliably across all viewers)
-        if key == Qt.Key_PageDown: self.next_file()
-        elif key == Qt.Key_PageUp: self.prev_file()
-        elif key == Qt.Key_Escape: self.close()
-        
-        # 2. Image Specific Controls (Arrow keys change image naturally)
-        elif isinstance(self.current_player, DedicatedImageViewer):
-            if key == Qt.Key_Right: self.next_file()
-            elif key == Qt.Key_Left: self.prev_file()
-            elif key in (Qt.Key_Plus, Qt.Key_Equal): self.current_player.zoom(1.15)
-            elif key == Qt.Key_Minus: self.current_player.zoom(0.85)
-            elif key == Qt.Key_0: self.current_player.reset_view()
-            elif key == Qt.Key_R: self.current_player.rotate_image()
-            
-        # 3. Media Specific Controls (Space = Play, Arrows = Seek/Volume)
-        elif isinstance(self.current_player, DedicatedMediaViewer):
-            if key == Qt.Key_Space: self.current_player.toggle_playback()
-            elif key == Qt.Key_Right: self.current_player.seek(5) # Forward 5s
-            elif key == Qt.Key_Left: self.current_player.seek(-5) # Back 5s
-            elif key == Qt.Key_Up: self.current_player.change_volume(0.1) # Vol Up
-            elif key == Qt.Key_Down: self.current_player.change_volume(-0.1) # Vol Down
-            
-        # 4. Text Specific Controls (Arrows scroll natively)
-        elif isinstance(self.current_player, DedicatedTextViewer):
-            super().keyPressEvent(event) # Let the text edit handle arrow scrolling
-        else:
-            super().keyPressEvent(event)
-
     def next_file(self):
-        if self.current_valid_index < len(self.valid_rows) - 1:
-            self.current_valid_index += 1
-            self.load_file()
+        self.slideshow_progress = 0 # Reset animation on manual next
+        if isinstance(self.current_player, DedicatedMediaViewer) and self.current_player.is_shuffle:
+            if len(self.valid_rows) > 1:
+                new_idx = self.current_valid_index
+                while new_idx == self.current_valid_index:
+                    new_idx = random.randint(0, len(self.valid_rows) - 1)
+                self.current_valid_index = new_idx
+                self.load_file()
+            return
+            
+        if self.current_valid_index < len(self.valid_rows) - 1: self.current_valid_index += 1
+        else: self.current_valid_index = 0
+        self.load_file()
 
     def prev_file(self):
-        if self.current_valid_index > 0:
-            self.current_valid_index -= 1
-            self.load_file()
+        self.slideshow_progress = 0 # Reset animation on manual prev
+        if self.current_valid_index > 0: self.current_valid_index -= 1
+        else: self.current_valid_index = len(self.valid_rows) - 1
+        self.load_file()
+
+    def toggle_fullscreen(self):
+        if self.isFullScreen(): self.showNormal()
+        else: self.showFullScreen()
+
+    def handle_escape(self):
+        if self.isFullScreen(): self.showNormal()
+        else: self.close()
+
+    def toggle_ui(self):
+        self.ui_hidden = not self.ui_hidden
+        self.nav_container.setVisible(not self.ui_hidden)
+        if isinstance(self.current_player, DedicatedMediaViewer):
+            self.current_player.controls_container.setVisible(not self.ui_hidden)
 
     def load_file(self):
-        # 1. Clean up old player safely
         if isinstance(self.current_player, DedicatedMediaViewer):
             self.current_player.clean_up()
             
@@ -483,75 +634,77 @@ class InternalViewer(QDialog):
             
         self.current_player = None
             
-        # 2. Grab new file data
         table_row = self.valid_rows[self.current_valid_index]
         self.table_view.selectRow(table_row)
         row_data = self.model.filtered_rows[table_row]
         
-        filepath = row_data.get("user_data_1", "")
+        self.current_filepath = row_data.get("user_data_1", "")
         filename = str(row_data.get("display", [])[1]) if len(row_data.get("display", [])) > 1 else "Unknown"
         ext = row_data.get("ext_meta", "").lower()
         
-        # 3. Update Labels
+        # Smart Compact Resizing for Audio
+        if self.active_category == AUD_EXTS and not self.isFullScreen():
+            self.setMinimumSize(450, 250)
+            self.resize(450, 250)
+        elif not self.isFullScreen():
+            self.setMinimumSize(800, 600)
+            
         cat_name = "Files"
         if self.active_category == IMG_EXTS: cat_name = "Images"
         elif self.active_category == VID_EXTS: cat_name = "Videos"
         elif self.active_category == AUD_EXTS: cat_name = "Audio"
         elif self.active_category == TXT_EXTS: cat_name = "Documents"
         
-        self.lbl_info.setText(f"{cat_name}: {self.current_valid_index + 1} / {len(self.valid_rows)} | {filename}")
+        info_text = f"{cat_name}: {self.current_valid_index + 1} / {len(self.valid_rows)} | {filename}"
+        self.lbl_info.setText(info_text)
         self.setWindowTitle(f"{cat_name} Viewer - {filename}")
         
-        if not filepath or not os.path.exists(filepath):
+        if not self.current_filepath or not os.path.exists(self.current_filepath):
             lbl = QLabel(f"Cannot preview '{filename}'.\nItem is missing from physical disk.")
             lbl.setAlignment(Qt.AlignCenter)
             lbl.setStyleSheet("color: #d4d4d4; font-size: 16px;")
             self.content_layout.addWidget(lbl)
             return
 
-        # 4. Launch Dedicated Player
         if ext in IMG_EXTS:
             self.current_player = DedicatedImageViewer()
             self.content_layout.addWidget(self.current_player)
-            hint = QLabel("<b>Shortcuts:</b> [Left/Right] Change Image | [Ctrl+Scroll] Zoom | [0] Fit | [R] Rotate")
-            hint.setStyleSheet("background-color: #1e1e1e; color: #888; padding: 5px;")
-            hint.setAlignment(Qt.AlignCenter)
-            self.content_layout.addWidget(hint)
-            
+            self.current_player.load_file(self.current_filepath)
         elif ext in TXT_EXTS:
             self.current_player = DedicatedTextViewer()
             self.content_layout.addWidget(self.current_player)
-            
+            self.current_player.load_file(self.current_filepath)
+            # CRITICAL FIX: Give focus back to Text Editor so Arrow Keys work immediately
+            self.current_player.setFocus()
         elif ext in VID_EXTS and MULTIMEDIA_AVAILABLE:
-            self.current_player = DedicatedMediaViewer(is_video=True)
+            self.current_player = DedicatedMediaViewer(is_video=True, parent_viewer=self)
             self.content_layout.addWidget(self.current_player)
-            hint = QLabel("<b>Shortcuts:</b> [Space] Play/Pause | [Left/Right] Seek 5s | [Up/Down] Volume | [PageUp/Down] Change File")
-            hint.setStyleSheet("background-color: #1e1e1e; color: #888; padding: 5px;")
-            hint.setAlignment(Qt.AlignCenter)
-            self.content_layout.addWidget(hint)
-            
+            self.current_player.load_file(self.current_filepath, filename)
         elif ext in AUD_EXTS and MULTIMEDIA_AVAILABLE:
-            self.current_player = DedicatedMediaViewer(is_video=False)
+            self.current_player = DedicatedMediaViewer(is_video=False, parent_viewer=self)
             self.content_layout.addWidget(self.current_player)
-            hint = QLabel("<b>Shortcuts:</b> [Space] Play/Pause | [Left/Right] Seek 5s | [Up/Down] Volume | [PageUp/Down] Change File")
-            hint.setStyleSheet("background-color: #1e1e1e; color: #888; padding: 5px;")
-            hint.setAlignment(Qt.AlignCenter)
-            self.content_layout.addWidget(hint)
-            
+            self.current_player.load_file(self.current_filepath, filename)
         else:
-            lbl = QLabel(f"No dedicated player for {ext} files.\nPress 'Esc' and right-click to open externally.")
+            lbl = QLabel(f"No dedicated player for {ext} files.\nPress 'Esc' and click 'Open Externally'.")
             lbl.setAlignment(Qt.AlignCenter)
             lbl.setStyleSheet("color: #d4d4d4; font-size: 14px;")
             self.content_layout.addWidget(lbl)
             return
+            
+        if self.ui_hidden and isinstance(self.current_player, DedicatedMediaViewer):
+            self.current_player.controls_container.setVisible(False)
 
-        # Load the actual file data into the player
-        self.current_player.load_file(filepath)
+        self._apply_dynamic_shortcuts()
 
     def closeEvent(self, event):
         if isinstance(self.current_player, DedicatedMediaViewer):
             self.current_player.clean_up()
+        if self.slideshow_timer.isActive():
+            self.slideshow_timer.stop()
+        if self in self.parent().active_viewers:
+            self.parent().active_viewers.remove(self)
         super().closeEvent(event)
+
 
 # ---------------- Database ----------------
 class CatalogDB:
@@ -1663,7 +1816,9 @@ class DriveExplorerWindow(QMainWindow):
         form_layout.setSpacing(10)
         
         self.as_name = QLineEdit()
+        self.as_name.returnPressed.connect(self.run_advanced_search) # <--- ADDED
         self.as_folder = QLineEdit()
+        self.as_folder.returnPressed.connect(self.run_advanced_search) # <--- ADDED
         self.as_match_type = QComboBox()
         self.as_match_type.addItems(["Contains", "Exact Match", "Starts With", "Ends With"])
         self.as_type = QComboBox()
@@ -1671,10 +1826,13 @@ class DriveExplorerWindow(QMainWindow):
         self.as_drive = QComboBox()
         self.as_drive.addItem("Any Drive")
         self.as_ext = QLineEdit()
+        self.as_ext.returnPressed.connect(self.run_advanced_search) # <--- ADDED
         
         size_layout = QHBoxLayout()
         self.as_min_size = QLineEdit()
+        self.as_min_size.returnPressed.connect(self.run_advanced_search) # <--- ADDED
         self.as_max_size = QLineEdit()
+        self.as_max_size.returnPressed.connect(self.run_advanced_search) # <--- ADDED
         size_layout.addWidget(self.as_min_size)
         size_layout.addWidget(QLabel(" to "))
         size_layout.addWidget(self.as_max_size)
@@ -2027,6 +2185,9 @@ class DriveExplorerWindow(QMainWindow):
 
     def _setup_shortcuts(self):
             # --- Global App Navigation ---
+            QShortcut(QKeySequence("Ctrl+M"), self, activated=self.restore_background_players)
+
+
             # Next/Prev Tab (Ctrl+Tab / Ctrl+Shift+Tab)
             QShortcut(QKeySequence("Ctrl+Tab"), self, activated=self.next_tab)
             QShortcut(QKeySequence("Ctrl+Shift+Tab"), self, activated=self.prev_tab)
@@ -2050,6 +2211,14 @@ class DriveExplorerWindow(QMainWindow):
             QShortcut(QKeySequence.Delete, self.ms_file_table, activated=self.ms_delete_selected_shortcut)
 
     # ---------- Navigation Helpers ----------
+    def restore_background_players(self):
+        if hasattr(self, 'active_viewers'):
+            for viewer in self.active_viewers:
+                if viewer.isHidden():
+                    viewer.showNormal()
+                    viewer.activateWindow()    
+    
+    
     def next_tab(self):
             next_idx = (self.tabs.currentIndex() + 1) % self.tabs.count()
             self.tabs.setCurrentIndex(next_idx)
@@ -2098,7 +2267,11 @@ class DriveExplorerWindow(QMainWindow):
             "<b>Notes:</b><br>"
             "• 'Global Copies' counts instances of a file's hash globally across all drives.<br>"
             "• Custom Icons: Place .png or .ico files in the 'icons' folder named by extension (e.g., 'jpg.png').<br>"
-            "• Internal Viewers: Double click images, txt/log files, or media files (requires codecs) to open natively without leaving the app."
+            "• Internal Viewers: Double click images, txt/log files, or media files (requires codecs) to open natively without leaving the app.<br>"
+            "• True Multitasking: Start a playlist, press B to send the audio player to the background, and open photos in the main UI without stopping the music. Press Ctrl+M on the main app to restore hidden background players.<br>"
+            "• Media Keybinds: Normal Left/Right arrows now natively change files. Shift+Left/Right seeks through the audio track perfectly.<br>"
+            "• No More Annoying Resizing: The forced resize logic is removed. The window stays the size you want it.<br>"
+            "• Image Controls: Press F to flip horizontally, Shift+F to flip vertically, and S to start an Auto-play Slideshow."
         )
 
     # ---------- Global Data Methods ----------
@@ -3249,8 +3422,15 @@ class DriveExplorerWindow(QMainWindow):
         QMessageBox.information(self, "Open", "No accessible path for this file on the local machine.")
 
     def open_local_file(self, file_path: str, table_source, row_idx: int):
+        # Initialize an array to safely hold active viewers if it doesn't exist
+        if not hasattr(self, 'active_viewers'):
+            self.active_viewers = []
+            
         viewer = InternalViewer(table_source, row_idx, self)
-        viewer.exec()
+        self.active_viewers.append(viewer)
+        
+        # CRITICAL: show() instead of exec() allows the player to run in the background
+        viewer.show()
 
     def open_file_location(self, file_path: str):
         if os.path.exists(file_path):
@@ -3517,10 +3697,9 @@ class DriveExplorerWindow(QMainWindow):
 
     def ms_context_menu(self, pos):
         idx = self.ms_file_table.indexAt(pos)
-        if not idx.isValid(): 
-            return
         menu = QMenu(self)
         
+        # 1. Global Actions (Always available, even when clicking empty space)
         act_new_folder = QAction("Create New Virtual Folder", self)
         act_new_folder.triggered.connect(self.ms_create_folder)
         menu.addAction(act_new_folder)
@@ -3531,51 +3710,53 @@ class DriveExplorerWindow(QMainWindow):
         if not self.sb_clip_ids: act_paste.setEnabled(False)
         menu.addAction(act_paste)
         
-        sel_rows = self.ms_file_table.selectionModel().selectedRows()
-        if sel_rows:
-            menu.addSeparator()
-            act_copy = QAction("Copy", self)
-            act_copy.triggered.connect(self.ms_copy)
-            act_cut = QAction("Cut", self)
-            act_cut.triggered.connect(self.ms_cut)
-            act_del = QAction("Remove from Sandbox", self)
-            act_del.triggered.connect(self.ms_delete_selected_shortcut)
-            
-            menu.addAction(act_copy)
-            menu.addAction(act_cut)
-            menu.addAction(act_del)
-            
-            if len(sel_rows) == 1:
-                model = self.ms_file_table.model()
-                typ, path, db_id = model.data(model.index(sel_rows[0].row(), 1), Qt.UserRole)
-                
-                act_rename = QAction("Rename in Sandbox", self)
-                act_rename.triggered.connect(lambda: self.ms_rename_item(typ, path, db_id, sel_rows[0].row()))
-                menu.addAction(act_rename)
-                
-                act_move = QAction("Move to Virtual Folder...", self)
-                act_move.triggered.connect(lambda: self.ms_move_item(typ, path, db_id, sel_rows[0].row()))
-                menu.addAction(act_move)
-                
+        # 2. Item-Specific Actions (Only appear if you actually clicked a file/folder)
+        if idx.isValid():
+            sel_rows = self.ms_file_table.selectionModel().selectedRows()
+            if sel_rows:
                 menu.addSeparator()
+                act_copy = QAction("Copy", self)
+                act_copy.triggered.connect(self.ms_copy)
+                act_cut = QAction("Cut", self)
+                act_cut.triggered.connect(self.ms_cut)
+                act_del = QAction("Remove from Sandbox", self)
+                act_del.triggered.connect(self.ms_delete_selected_shortcut)
                 
-                if typ == "file":
-                    act_open = QAction("Open Local File (System Default)", self)
-                    act_open.triggered.connect(lambda: self.ms_open_local_file_system(db_id))
-                    menu.addAction(act_open)
+                menu.addAction(act_copy)
+                menu.addAction(act_cut)
+                menu.addAction(act_del)
+                
+                if len(sel_rows) == 1:
+                    model = self.ms_file_table.model()
+                    typ, path, db_id = model.data(model.index(sel_rows[0].row(), 1), Qt.UserRole)
                     
-                    act_open_int = QAction("Open in Built-in Viewer", self)
-                    act_open_int.triggered.connect(lambda: self.on_ms_table_double_click(sel_rows[0]))
-                    menu.addAction(act_open_int)
+                    act_rename = QAction("Rename in Sandbox", self)
+                    act_rename.triggered.connect(lambda: self.ms_rename_item(typ, path, db_id, sel_rows[0].row()))
+                    menu.addAction(act_rename)
                     
-                    act_open_loc = QAction("Open Physical Location", self)
-                    act_open_loc.triggered.connect(lambda: self.ms_open_physical_location(db_id))
-                    menu.addAction(act_open_loc)
-                
-                act_real = QAction("Copy to Real Path on Disk...", self)
-                act_real.triggered.connect(lambda: self.ms_copy_to_real_location(db_id, typ, path))
-                menu.addAction(act_real)
-                
+                    act_move = QAction("Move to Virtual Folder...", self)
+                    act_move.triggered.connect(lambda: self.ms_move_item(typ, path, db_id, sel_rows[0].row()))
+                    menu.addAction(act_move)
+                    
+                    menu.addSeparator()
+                    
+                    if typ == "file":
+                        act_open = QAction("Open Local File (System Default)", self)
+                        act_open.triggered.connect(lambda: self.ms_open_local_file_system(db_id))
+                        menu.addAction(act_open)
+                        
+                        act_open_int = QAction("Open in Built-in Viewer", self)
+                        act_open_int.triggered.connect(lambda: self.on_ms_table_double_click(sel_rows[0]))
+                        menu.addAction(act_open_int)
+                        
+                        act_open_loc = QAction("Open Physical Location", self)
+                        act_open_loc.triggered.connect(lambda: self.ms_open_physical_location(db_id))
+                        menu.addAction(act_open_loc)
+                    
+                    act_real = QAction("Copy to Real Path on Disk...", self)
+                    act_real.triggered.connect(lambda: self.ms_copy_to_real_location(db_id, typ, path))
+                    menu.addAction(act_real)
+                    
         menu.exec(self.ms_file_table.viewport().mapToGlobal(pos))
 
     def ms_open_local_file_system(self, db_id):
