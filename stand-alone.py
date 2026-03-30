@@ -1743,17 +1743,36 @@ class DriveExplorerWindow(QMainWindow):
         
         self.activity_cal = QCalendarWidget()
         self.activity_cal.setGridVisible(True)
+        # -> Mouse click updates table
         self.activity_cal.clicked.connect(self.on_diary_date_clicked)
-        self.activity_cal.currentPageChanged.connect(self.update_diary_chart) # Update chart on month change
+        # -> Enter/Return key updates table natively 
+        self.activity_cal.activated.connect(self.on_diary_date_clicked) 
+        # -> Arrow keys changing months updates the chart
+        self.activity_cal.currentPageChanged.connect(self.update_diary_chart) 
         cal_layout.addWidget(self.activity_cal)
 
-        self.btn_view_timeline = QPushButton("🌟 Load Full Timeline (According to Filters)")
+        self.btn_view_timeline = QPushButton("🌟 Load Current Month's Timeline")
         self.btn_view_timeline.setStyleSheet("background-color: #8e44ad; color: white; font-weight: bold; padding: 8px;")
         self.btn_view_timeline.clicked.connect(self.load_full_timeline)
         cal_layout.addWidget(self.btn_view_timeline)
 
-        # Colorful Chart Widget
-        cal_layout.addWidget(QLabel("<b>Monthly Activity Chart</b>"))
+        # Colorful Chart Widget & Controls
+        chart_ctrl_layout = QHBoxLayout()
+        chart_ctrl_layout.addWidget(QLabel("<b>Chart Mode:</b>"))
+        self.diary_chart_mode = QComboBox()
+        self.diary_chart_mode.addItems([
+            "Daily Activity (Count)", 
+            "Daily Activity (Size)", 
+            "By Category (Count)", 
+            "By Category (Size)",
+            "By Extension (Count)",
+            "By Extension (Size)"
+        ])
+        # Update chart immediately when option is changed
+        self.diary_chart_mode.currentIndexChanged.connect(lambda: self.update_diary_chart(self.activity_cal.selectedDate().year(), self.activity_cal.selectedDate().month()))
+        chart_ctrl_layout.addWidget(self.diary_chart_mode, stretch=1)
+        cal_layout.addLayout(chart_ctrl_layout)
+
         if MATPLOTLIB_AVAILABLE:
             self.diary_figure = Figure(figsize=(4, 3))
             self.diary_canvas = FigureCanvas(self.diary_figure)
@@ -1806,14 +1825,62 @@ class DriveExplorerWindow(QMainWindow):
         self.status.addPermanentWidget(self.selected_label)
 
     def _setup_shortcuts(self):
-        # Global Search
-        QShortcut(QKeySequence("Ctrl+F"), self, activated=lambda: self.ex_search.setFocus())
-        
-        # Sandbox Clipboard
-        QShortcut(QKeySequence.Copy, self.ms_file_table, activated=self.ms_copy)
-        QShortcut(QKeySequence.Cut, self.ms_file_table, activated=self.ms_cut)
-        QShortcut(QKeySequence.Paste, self.ms_file_table, activated=self.ms_paste)
-        QShortcut(QKeySequence.Delete, self.ms_file_table, activated=self.ms_delete_selected_shortcut)
+            # --- Global App Navigation ---
+            # Next/Prev Tab (Ctrl+Tab / Ctrl+Shift+Tab)
+            QShortcut(QKeySequence("Ctrl+Tab"), self, activated=self.next_tab)
+            QShortcut(QKeySequence("Ctrl+Shift+Tab"), self, activated=self.prev_tab)
+            
+            # Quick Tab Jumps (Ctrl+1, Ctrl+2, etc.)
+            for i in range(self.tabs.count()):
+                QShortcut(QKeySequence(f"Ctrl+{i+1}"), self, activated=lambda idx=i: self.tabs.setCurrentIndex(idx))
+
+            # --- Global App Actions ---
+            QShortcut(QKeySequence("Ctrl+Q"), self, activated=self.close) # Quit
+            QShortcut(QKeySequence("F5"), self, activated=self.refresh_all) # Global Refresh
+            QShortcut(QKeySequence("Ctrl+T"), self, activated=self.toggle_theme) # Toggle Theme
+            
+            # Smart Search Focus (Ctrl+F routes to the active tab's search bar)
+            QShortcut(QKeySequence("Ctrl+F"), self, activated=self.smart_focus_search)
+            
+            # --- Sandbox Clipboard Shortcuts ---
+            QShortcut(QKeySequence.Copy, self.ms_file_table, activated=self.ms_copy)
+            QShortcut(QKeySequence.Cut, self.ms_file_table, activated=self.ms_cut)
+            QShortcut(QKeySequence.Paste, self.ms_file_table, activated=self.ms_paste)
+            QShortcut(QKeySequence.Delete, self.ms_file_table, activated=self.ms_delete_selected_shortcut)
+
+    # ---------- Navigation Helpers ----------
+    def next_tab(self):
+            next_idx = (self.tabs.currentIndex() + 1) % self.tabs.count()
+            self.tabs.setCurrentIndex(next_idx)
+
+    def prev_tab(self):
+            prev_idx = (self.tabs.currentIndex() - 1) % self.tabs.count()
+            self.tabs.setCurrentIndex(prev_idx)
+            
+    def smart_focus_search(self):
+            """Focuses the relevant search bar depending on the active tab."""
+            current_tab = self.tabs.tabText(self.tabs.currentIndex())
+            if current_tab == "Global Explorer":
+                self.ex_search.setFocus()
+                self.ex_search.selectAll()
+            elif current_tab == "⚡ Fast Explorer":
+                self.fast_search.setFocus()
+                self.fast_search.selectAll()
+            elif current_tab == "⭐ MySpace Sandbox":
+                self.ms_search.setFocus()
+                self.ms_search.selectAll()
+            elif current_tab == "📅 Timeline Diary":
+                self.diary_search.setFocus()
+                self.diary_search.selectAll()
+            elif current_tab == "Comparisons":
+                self.comp_search.setFocus()
+                self.comp_search.selectAll()
+            elif current_tab == "🔍 Advanced Search":
+                self.as_name.setFocus()
+                self.as_name.selectAll()
+            elif current_tab == "📑 Advanced Reports":
+                self.rep_filter.setFocus()
+                self.rep_filter.selectAll()
 
     def show_help(self):
         QMessageBox.information(self, "Help & Shortcuts", 
@@ -1879,6 +1946,15 @@ class DriveExplorerWindow(QMainWindow):
                 QTableView::indicator, QTableWidget::indicator { width: 18px; height: 18px; }
                 QHeaderView::section { background-color: #333333; color: #ffffff; padding: 4px; border: 1px solid #3e3e42; }
                 QLineEdit, QComboBox, QDateEdit, QSpinBox { background-color: #333333; color: #d4d4d4; border: 1px solid #555; padding: 3px; border-radius: 3px; }
+                
+                /* --- THE FIX: Slimmed scrollbars and forced dropdown width --- */
+                QScrollBar:vertical { border: none; background: #1e1e1e; width: 12px; margin: 0px; }
+                QScrollBar::handle:vertical { background: #555; border-radius: 6px; min-height: 20px; }
+                QScrollBar::handle:vertical:hover { background: #777; }
+                QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+                QComboBox QAbstractItemView { min-width: 100px; background-color: #252526; selection-background-color: #0e639c; }
+                /* ------------------------------------------------------------- */
+                
                 QPushButton { background-color: #0e639c; color: #ffffff; border: none; padding: 6px 12px; border-radius: 3px; font-weight: bold; }
                 QPushButton:hover { background-color: #1177bb; }
                 QTabBar::tab { background-color: #2d2d30; color: #d4d4d4; padding: 8px 16px; border: 1px solid #3e3e42; }
@@ -2327,20 +2403,83 @@ class DriveExplorerWindow(QMainWindow):
             if qdate.isValid():
                 self.activity_cal.setDateTextFormat(qdate, fmt)
 
-        # Refresh the Chart & Table View
+        # Refresh the Chart 
         self.update_diary_chart(self.activity_cal.selectedDate().year(), self.activity_cal.selectedDate().month())
-        self.load_full_timeline()
+        
+        # Clear the table so it starts empty and waits for user choice
+        self._populate_diary_table([])
+        self.diary_lbl.setText("<b>Select a date or click 'Load Full Timeline' to view events.</b>")
 
-    def update_diary_chart(self, year, month):
+    def update_diary_chart(self, year=None, month=None):
         if not MATPLOTLIB_AVAILABLE or not hasattr(self, 'diary_figure'): return
         
+        if year is None or month is None:
+            year = self.activity_cal.selectedDate().year()
+            month = self.activity_cal.selectedDate().month()
+
         month_str = f"{year}-{month:02d}"
         base_sql, params = self._get_diary_filters_sql()
-
-        query = f"SELECT SUBSTR(modified, 9, 2) as day, COUNT(id) FROM files WHERE {base_sql} AND modified LIKE ? GROUP BY day"
+        mode = self.diary_chart_mode.currentText()
+        
         cur = self.db.conn.cursor()
-        cur.execute(query, params + [f"{month_str}%"])
-        data = cur.fetchall()
+        
+        labels = []
+        values = []
+        title = f"Activity for {month_str}"
+        ylabel = "Count"
+        
+        # 1. Daily Activity Logic
+        if "Daily Activity" in mode:
+            query = f"SELECT SUBSTR(modified, 9, 2) as day, COUNT(id), SUM(size) FROM files WHERE {base_sql} AND modified LIKE ? GROUP BY day"
+            cur.execute(query, params + [f"{month_str}%"])
+            data = cur.fetchall()
+            labels = [str(int(r[0])) for r in data]
+            values = [r[1] if "Count" in mode else (r[2] or 0)/(1024*1024) for r in data]
+            ylabel = "Count" if "Count" in mode else "Size (MB)"
+            title = f"Daily {ylabel} for {month_str}"
+        
+        # 2. Top Extensions Logic
+        elif "By Extension" in mode:
+            query = f"SELECT COALESCE(NULLIF(extension, ''), 'unknown') as ext, COUNT(id), SUM(size) FROM files WHERE {base_sql} AND modified LIKE ? GROUP BY ext ORDER BY COUNT(id) DESC LIMIT 10"
+            cur.execute(query, params + [f"{month_str}%"])
+            data = cur.fetchall()
+            labels = [r[0] for r in data]
+            values = [r[1] if "Count" in mode else (r[2] or 0)/(1024*1024) for r in data]
+            ylabel = "Count" if "Count" in mode else "Size (MB)"
+            title = f"Top Formats for {month_str}"
+            
+        # 3. Category Grouping Logic
+        elif "By Category" in mode:
+            query = f"SELECT extension, COUNT(id), SUM(size) FROM files WHERE {base_sql} AND modified LIKE ? GROUP BY extension"
+            cur.execute(query, params + [f"{month_str}%"])
+            data = cur.fetchall()
+            
+            cat_map = {
+                "Images": {'.jpg','.jpeg','.png','.gif','.bmp','.webp','.ico','.tif','.tiff'},
+                "Videos": {'.mp4','.avi','.mkv','.mov','.wmv','.flv','.webm'},
+                "Docs": {'.txt','.doc','.docx','.pdf','.xls','.xlsx','.ppt','.pptx','.csv'},
+                "Audio": {'.mp3','.wav','.aac','.ogg','.flac'},
+                "Zips": {'.zip','.rar','.7z','.tar','.gz'},
+                "Code": {'.py','.js','.html','.css','.json','.cpp','.c','.java'}
+            }
+            buckets = {k: 0 for k in cat_map.keys()}
+            buckets["Others"] = 0
+            
+            for ext, cnt, sz in data:
+                val = cnt if "Count" in mode else (sz or 0)/(1024*1024)
+                placed = False
+                for cat, exts in cat_map.items():
+                    if ext and ext.lower() in exts:
+                        buckets[cat] += val
+                        placed = True
+                        break
+                if not placed:
+                    buckets["Others"] += val
+                    
+            labels = [k for k, v in buckets.items() if v > 0]
+            values = [v for v in buckets.values() if v > 0]
+            ylabel = "Count" if "Count" in mode else "Size (MB)"
+            title = f"Category {ylabel} for {month_str}"
 
         self.diary_figure.clear()
         bg_color = '#1e1e1e' if self.is_dark_mode else '#ffffff'
@@ -2350,20 +2489,22 @@ class DriveExplorerWindow(QMainWindow):
         ax = self.diary_figure.add_subplot(111)
         ax.set_facecolor(bg_color)
 
-        if not data:
+        if not values:
             ax.text(0.5, 0.5, f"No activity in {month_str}", ha='center', va='center', color=text_color)
             ax.set_axis_off()
         else:
-            days = [int(r[0]) for r in data]
-            counts = [r[1] for r in data]
-            
-            # Colorful bars
+            # Render vibrant bars based on mode
             colors = ['#ff9999','#66b3ff','#99ff99','#ffcc99','#c2c2f0','#ffb3e6', '#c4e17f', '#76D7C4', '#F7DC6F', '#85C1E9']
-            c_list = [colors[i % len(colors)] for i in range(len(days))]
+            c_list = [colors[i % len(colors)] for i in range(len(labels))]
 
-            ax.bar(days, counts, color=c_list)
-            ax.set_title(f"Activity for {month_str}", color=text_color, fontsize=10)
+            ax.bar(labels, values, color=c_list)
+            ax.set_title(title, color=text_color, fontsize=10)
+            ax.set_ylabel(ylabel, color=text_color, fontsize=8)
             ax.tick_params(colors=text_color, labelsize=8)
+            
+            if "Extension" in mode or "Category" in mode:
+                ax.tick_params(axis='x', rotation=45)
+                
             ax.spines['bottom'].set_color('#555' if self.is_dark_mode else '#ccc')
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
@@ -2406,12 +2547,26 @@ class DriveExplorerWindow(QMainWindow):
         self._populate_diary_table(cur.fetchall())
 
     def load_full_timeline(self):
-        self.diary_lbl.setText(f"<b>Full Recent Timeline (Filtered, Limited to {MAX_RENDER_ROWS} events)</b>")
+        # Fetch the exact year and month currently visible on the calendar
+        year = self.activity_cal.yearShown()
+        month = self.activity_cal.monthShown()
+        month_str = f"{year}-{month:02d}"
+
+        self.diary_lbl.setText(f"<b>Activity Timeline for {month_str} (Filtered, Limited to {MAX_RENDER_ROWS})</b>")
         
         cur = self.db.conn.cursor()
         base_sql, params = self._get_diary_filters_sql()
 
-        cur.execute(f"SELECT relpath, name, size, extension, modified, drive, fullpath, is_folder FROM files WHERE {base_sql} ORDER BY modified DESC LIMIT {MAX_RENDER_ROWS}", params)
+        # Add the month filter (LIKE 'YYYY-MM%') directly to the SQL query
+        query = f"""
+            SELECT relpath, name, size, extension, modified, drive, fullpath, is_folder 
+            FROM files 
+            WHERE {base_sql} AND modified LIKE ? 
+            ORDER BY modified DESC 
+            LIMIT {MAX_RENDER_ROWS}
+        """
+        
+        cur.execute(query, params + [f"{month_str}%"])
         self._populate_diary_table(cur.fetchall())
 
     def _populate_diary_table(self, rows):
