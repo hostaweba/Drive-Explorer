@@ -1693,36 +1693,50 @@ class DriveExplorerWindow(QMainWindow):
             
         self.tabs.addTab(charts_tab, "📊 Statistics & Charts")
 
-        # 8. Activity Timeline Diary Tab
+        # 8. Activity Timeline Diary Tab (PRO UPGRADE)
         diary_tab = QWidget()
         dv_main = QVBoxLayout(diary_tab)
 
-        # Top Control Bar
+        # Top Control Bar - Added Category & Extension Filters
         diary_controls = QHBoxLayout()
-        diary_controls.addWidget(QLabel("Drive Filter:"))
+        
+        diary_controls.addWidget(QLabel("Drive:"))
         self.diary_drive = QComboBox()
         self.diary_drive.addItem("Any Drive")
         self.diary_drive.currentIndexChanged.connect(self.refresh_diary_data)
         diary_controls.addWidget(self.diary_drive)
 
-        diary_controls.addWidget(QLabel("Active Years:"))
+        diary_controls.addWidget(QLabel("Category:"))
+        self.diary_category = QComboBox()
+        self.diary_category.addItems(["All Files", "Images", "Videos", "Documents", "Audio", "Archives", "Code/Scripts"])
+        self.diary_category.currentIndexChanged.connect(self.refresh_diary_data)
+        diary_controls.addWidget(self.diary_category)
+
+        diary_controls.addWidget(QLabel("Ext:"))
+        self.diary_ext = QLineEdit()
+        self.diary_ext.setPlaceholderText("e.g. .jpg")
+        self.diary_ext.setMaximumWidth(80)
+        self.diary_ext.textChanged.connect(self.refresh_diary_data)
+        diary_controls.addWidget(self.diary_ext)
+
+        diary_controls.addWidget(QLabel("Year:"))
         self.diary_year = QComboBox()
         self.diary_year.currentIndexChanged.connect(self.on_diary_year_changed)
         diary_controls.addWidget(self.diary_year)
 
         self.diary_search = QLineEdit()
-        self.diary_search.setPlaceholderText("Filter timeline events (Name, Ext, Path)...")
+        self.diary_search.setPlaceholderText("Filter current view (Name, Path)...")
         self.diary_search.textChanged.connect(self.apply_diary_filter)
         diary_controls.addWidget(self.diary_search, stretch=1)
 
-        self.btn_refresh_diary = QPushButton("Refresh Activity")
+        self.btn_refresh_diary = QPushButton("↻ Refresh")
         self.btn_refresh_diary.clicked.connect(self.refresh_diary_data)
         diary_controls.addWidget(self.btn_refresh_diary)
         dv_main.addLayout(diary_controls)
 
         diary_split = QSplitter(Qt.Horizontal)
 
-        # Left Side: Calendar & Quick Controls
+        # Left Side: Calendar, Quick Controls & Monthly Chart
         cal_container = QWidget()
         cal_layout = QVBoxLayout(cal_container)
         cal_layout.addWidget(QLabel("<b>Activity Calendar</b>"))
@@ -1730,24 +1744,32 @@ class DriveExplorerWindow(QMainWindow):
         self.activity_cal = QCalendarWidget()
         self.activity_cal.setGridVisible(True)
         self.activity_cal.clicked.connect(self.on_diary_date_clicked)
+        self.activity_cal.currentPageChanged.connect(self.update_diary_chart) # Update chart on month change
         cal_layout.addWidget(self.activity_cal)
 
-        self.btn_view_timeline = QPushButton("🌟 Load Full Timeline (Recent 25,000)")
+        self.btn_view_timeline = QPushButton("🌟 Load Full Timeline (According to Filters)")
         self.btn_view_timeline.setStyleSheet("background-color: #8e44ad; color: white; font-weight: bold; padding: 8px;")
         self.btn_view_timeline.clicked.connect(self.load_full_timeline)
         cal_layout.addWidget(self.btn_view_timeline)
 
-        cal_layout.addStretch()
+        # Colorful Chart Widget
+        cal_layout.addWidget(QLabel("<b>Monthly Activity Chart</b>"))
+        if MATPLOTLIB_AVAILABLE:
+            self.diary_figure = Figure(figsize=(4, 3))
+            self.diary_canvas = FigureCanvas(self.diary_figure)
+            cal_layout.addWidget(self.diary_canvas)
+        else:
+            cal_layout.addWidget(QLabel("Matplotlib not installed. Chart disabled."))
+
         diary_split.addWidget(cal_container)
 
         # Right Side: Interactive Table View
         right_container = QWidget()
         right_layout = QVBoxLayout(right_container)
         
-        self.diary_lbl = QLabel("<b>Select a date on the calendar or load the full timeline to view events.</b>")
+        self.diary_lbl = QLabel("<b>Select a date or load the full timeline to view events. (Tip: Use Arrow Keys, Enter to open, Backspace to clear date)</b>")
         right_layout.addWidget(self.diary_lbl)
 
-        # Utilize your existing high-speed Table Engine
         self.diary_table = ActionTableView()
         self.diary_table.verticalHeader().setVisible(False)
         self.diary_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
@@ -1755,14 +1777,25 @@ class DriveExplorerWindow(QMainWindow):
         self.diary_table.setSortingEnabled(True)
         self.diary_table.setAlternatingRowColors(True)
         
-        # Connect to internal viewer and context menu!
         self.diary_table.doubleClicked.connect(self.on_diary_table_double_click)
         self.diary_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.diary_table.customContextMenuRequested.connect(lambda pos: self.file_context_menu(pos, self.diary_table))
         
+        # KEYBOARD CONTROLS INJECTION
+        original_key_press = self.diary_table.keyPressEvent
+        def custom_diary_key_press(event):
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                idx = self.diary_table.currentIndex()
+                if idx.isValid(): self.on_diary_table_double_click(idx)
+            elif event.key() == Qt.Key_Backspace:
+                self.load_full_timeline() # Backspace clears date filter and loads full filtered timeline
+            else:
+                original_key_press(event) # Preserves Arrow keys for navigation
+        self.diary_table.keyPressEvent = custom_diary_key_press
+
         right_layout.addWidget(self.diary_table)
         diary_split.addWidget(right_container)
-        diary_split.setSizes([400, 1200])
+        diary_split.setSizes([450, 1150])
         
         dv_main.addWidget(diary_split)
         self.tabs.addTab(diary_tab, "📅 Timeline Diary")
@@ -2231,13 +2264,44 @@ class DriveExplorerWindow(QMainWindow):
             print(f"Chart error: {e}")
 
     # ---------- Timeline Diary Logic ----------
+    def _get_diary_filters_sql(self) -> Tuple[str, list]:
+        """Helper to build dynamic SQL based on UI filters (Drive, Category, Extension)"""
+        drive = self.diary_drive.currentText()
+        cat = self.diary_category.currentText()
+        ext = self.diary_ext.text().strip().lower()
+
+        sql = " modified != '' "
+        params = []
+
+        if drive != "Any Drive":
+            sql += " AND drive = ?"
+            params.append(drive)
+
+        if cat != "All Files":
+            cat_map = {
+                "Images": "('.jpg','.jpeg','.png','.gif','.bmp','.webp','.ico','.tif','.tiff')",
+                "Videos": "('.mp4','.avi','.mkv','.mov','.wmv','.flv','.webm')",
+                "Documents": "('.txt','.doc','.docx','.pdf','.xls','.xlsx','.ppt','.pptx','.csv')",
+                "Audio": "('.mp3','.wav','.aac','.ogg','.flac')",
+                "Archives": "('.zip','.rar','.7z','.tar','.gz')",
+                "Code/Scripts": "('.py','.js','.html','.css','.json','.cpp','.c','.java')"
+            }
+            if cat in cat_map:
+                sql += f" AND extension IN {cat_map[cat]}"
+
+        if ext:
+            if not ext.startswith('.'): ext = '.' + ext
+            sql += " AND extension = ?"
+            params.append(ext)
+
+        return sql, params
+
     def refresh_diary_data(self):
         cur = self.db.conn.cursor()
-        drive = self.diary_drive.currentText()
-        df = "" if drive == "Any Drive" else f"AND drive='{drive}'"
+        base_sql, params = self._get_diary_filters_sql()
 
-        # 1. Update the "Active Years" Dropdown
-        cur.execute(f"SELECT DISTINCT SUBSTR(modified, 1, 4) FROM files WHERE modified != '' {df} ORDER BY 1 DESC")
+        # Update Active Years
+        cur.execute(f"SELECT DISTINCT SUBSTR(modified, 1, 4) FROM files WHERE {base_sql} ORDER BY 1 DESC", params)
         years = [r[0] for r in cur.fetchall() if r[0] and r[0].isdigit()]
         
         self.diary_year.blockSignals(True)
@@ -2248,11 +2312,11 @@ class DriveExplorerWindow(QMainWindow):
             self.diary_year.addItem("No Data")
         self.diary_year.blockSignals(False)
 
-        # 2. Highlight Active Dates on Calendar
-        cur.execute(f"SELECT DISTINCT SUBSTR(modified, 1, 10) FROM files WHERE modified != '' {df}")
+        # Highlight Active Dates on Calendar
+        cur.execute(f"SELECT DISTINCT SUBSTR(modified, 1, 10) FROM files WHERE {base_sql}", params)
         dates = [r[0] for r in cur.fetchall() if r[0]]
 
-        self.activity_cal.setDateTextFormat(QDate(), QTextCharFormat()) # Clear old
+        self.activity_cal.setDateTextFormat(QDate(), QTextCharFormat())
         fmt = QTextCharFormat()
         bg_col = QColor(39, 174, 96, 150) if self.is_dark_mode else QColor(46, 204, 113, 100)
         fmt.setBackground(bg_col)
@@ -2263,10 +2327,54 @@ class DriveExplorerWindow(QMainWindow):
             if qdate.isValid():
                 self.activity_cal.setDateTextFormat(qdate, fmt)
 
+        # Refresh the Chart & Table View
+        self.update_diary_chart(self.activity_cal.selectedDate().year(), self.activity_cal.selectedDate().month())
+        self.load_full_timeline()
+
+    def update_diary_chart(self, year, month):
+        if not MATPLOTLIB_AVAILABLE or not hasattr(self, 'diary_figure'): return
+        
+        month_str = f"{year}-{month:02d}"
+        base_sql, params = self._get_diary_filters_sql()
+
+        query = f"SELECT SUBSTR(modified, 9, 2) as day, COUNT(id) FROM files WHERE {base_sql} AND modified LIKE ? GROUP BY day"
+        cur = self.db.conn.cursor()
+        cur.execute(query, params + [f"{month_str}%"])
+        data = cur.fetchall()
+
+        self.diary_figure.clear()
+        bg_color = '#1e1e1e' if self.is_dark_mode else '#ffffff'
+        text_color = 'white' if self.is_dark_mode else 'black'
+        self.diary_figure.patch.set_facecolor(bg_color)
+        
+        ax = self.diary_figure.add_subplot(111)
+        ax.set_facecolor(bg_color)
+
+        if not data:
+            ax.text(0.5, 0.5, f"No activity in {month_str}", ha='center', va='center', color=text_color)
+            ax.set_axis_off()
+        else:
+            days = [int(r[0]) for r in data]
+            counts = [r[1] for r in data]
+            
+            # Colorful bars
+            colors = ['#ff9999','#66b3ff','#99ff99','#ffcc99','#c2c2f0','#ffb3e6', '#c4e17f', '#76D7C4', '#F7DC6F', '#85C1E9']
+            c_list = [colors[i % len(colors)] for i in range(len(days))]
+
+            ax.bar(days, counts, color=c_list)
+            ax.set_title(f"Activity for {month_str}", color=text_color, fontsize=10)
+            ax.tick_params(colors=text_color, labelsize=8)
+            ax.spines['bottom'].set_color('#555' if self.is_dark_mode else '#ccc')
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['left'].set_color('#555' if self.is_dark_mode else '#ccc')
+
+        self.diary_figure.tight_layout()
+        self.diary_canvas.draw()
+
     def on_diary_year_changed(self):
         year = self.diary_year.currentText()
         if year and year.isdigit():
-            # Jump calendar to January 1st of the selected year
             self.activity_cal.setSelectedDate(QDate(int(year), 1, 1))
 
     def apply_diary_filter(self, text):
@@ -2281,12 +2389,10 @@ class DriveExplorerWindow(QMainWindow):
         if not data: return
         typ, path = data
         if typ == "folder":
-            # Switch to explorer tab and open folder
-            self.tabs.setCurrentIndex(1)
+            self.tabs.setCurrentIndex(1) # Go to explorer
             self.load_directory(path)
             self._sync_tree_to_path(path)
         else:
-            # Open your custom Internal Viewer natively
             self.open_local_file("", self.diary_table, index.row())
 
     def on_diary_date_clicked(self, date: QDate):
@@ -2294,24 +2400,19 @@ class DriveExplorerWindow(QMainWindow):
         self.diary_lbl.setText(f"<b>Activity for {d_str}</b>")
         
         cur = self.db.conn.cursor()
-        drive = self.diary_drive.currentText()
-        df = "" if drive == "Any Drive" else f"AND drive='{drive}'"
+        base_sql, params = self._get_diary_filters_sql()
 
-        # Fetch detailed file rows for this specific day
-        cur.execute(f"SELECT relpath, name, size, extension, modified, drive, fullpath, is_folder FROM files WHERE modified LIKE ? {df} ORDER BY modified DESC", (f"{d_str}%",))
-        rows = cur.fetchall()
-        self._populate_diary_table(rows)
+        cur.execute(f"SELECT relpath, name, size, extension, modified, drive, fullpath, is_folder FROM files WHERE {base_sql} AND modified LIKE ? ORDER BY modified DESC", params + [f"{d_str}%"])
+        self._populate_diary_table(cur.fetchall())
 
     def load_full_timeline(self):
-        self.diary_lbl.setText(f"<b>Full Recent Timeline (Limited to {MAX_RENDER_ROWS} events)</b>")
+        self.diary_lbl.setText(f"<b>Full Recent Timeline (Filtered, Limited to {MAX_RENDER_ROWS} events)</b>")
+        
         cur = self.db.conn.cursor()
-        drive = self.diary_drive.currentText()
-        df = "" if drive == "Any Drive" else f"AND drive='{drive}'"
+        base_sql, params = self._get_diary_filters_sql()
 
-        # Fetch global timeline sorted by newest first
-        cur.execute(f"SELECT relpath, name, size, extension, modified, drive, fullpath, is_folder FROM files WHERE modified != '' {df} ORDER BY modified DESC LIMIT {MAX_RENDER_ROWS}")
-        rows = cur.fetchall()
-        self._populate_diary_table(rows)
+        cur.execute(f"SELECT relpath, name, size, extension, modified, drive, fullpath, is_folder FROM files WHERE {base_sql} ORDER BY modified DESC LIMIT {MAX_RENDER_ROWS}", params)
+        self._populate_diary_table(cur.fetchall())
 
     def _populate_diary_table(self, rows):
         self.diary_table.setUpdatesEnabled(False)
@@ -2324,7 +2425,6 @@ class DriveExplorerWindow(QMainWindow):
                 clean_rp = str(rp).rstrip('/')
                 n_str = clean_rp.split('/')[-1] if clean_rp else "/"
                 
-            # Split ISO date into Date and Time for cleaner UI
             m_str = str(m)
             dt_part = m_str[:10] if len(m_str) >= 10 else m_str
             tm_part = m_str[11:19] if len(m_str) >= 19 else ""
@@ -2332,7 +2432,6 @@ class DriveExplorerWindow(QMainWindow):
             table_rows.append({
                 "display": [str(r_idx+1), dt_part, tm_part, n_str, str(d), human_size(s or 0), str(e) if e else "Folder", str(rp)],
                 "sort_keys": [r_idx+1, (1, dt_part), (1, tm_part), (0 if is_f else 1, n_str.lower()), (0 if is_f else 1, str(d).lower()), (0 if is_f else 1, s or 0), (0 if is_f else 1, str(e).lower() if e else "folder"), (0 if is_f else 1, str(rp).lower())],
-                # This User_Data structure specifically triggers your existing Context Menu correctly
                 "user_data": ("folder" if is_f else "file", str(rp)), 
                 "user_data_1": str(fp) if fp else str(rp), 
                 "user_data_2": bool(is_f), 
@@ -2345,7 +2444,7 @@ class DriveExplorerWindow(QMainWindow):
         self.diary_table.setModel(model)
         
         cw = self.diary_table.setColumnWidth
-        cw(0, 50); cw(1, 90); cw(2, 80); cw(3, 250); cw(4, 80); cw(5, 80); cw(6, 80)
+        cw(0, 50); cw(1, 90); cw(2, 80); cw(3, 250); cw(4, 100); cw(5, 80); cw(6, 80)
         self.diary_table.setSortingEnabled(True)
         self.diary_table.setUpdatesEnabled(True)
 
