@@ -162,7 +162,19 @@ def age_from_date(d: date) -> Tuple[str, int]:
         parts.append(f"{days}d")
     return (" ".join(parts) if parts else "0d", days_total)
 
-# ---------------- Advanced Internal Viewer ----------------
+
+# ---------------- Advanced Internal Viewer (PRO UPGRADE) ----------------
+from PySide6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QSlider
+from PySide6.QtGui import QWheelEvent
+from PySide6.QtCore import QTime
+
+# Smart Category Definitions
+IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".ico"}
+VID_EXTS = {".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".webm"}
+AUD_EXTS = {".mp3", ".wav", ".aac", ".ogg", ".flac", ".m4a", ".wma"}
+TXT_EXTS = {".txt", ".log", ".csv", ".py", ".json", ".xml", ".ini", ".md", ".html", ".css", ".js", ".c", ".cpp"}
+
+
 class ScaledImageLabel(QLabel):
     def __init__(self):
         super().__init__()
@@ -192,15 +204,174 @@ class ScaledImageLabel(QLabel):
                 
             painter.drawPixmap((self.width() - scaled.width()) // 2, (self.height() - scaled.height()) // 2, scaled)
 
+
+class DedicatedImageViewer(QGraphicsView):
+    """Pro Image Viewer with Zoom, Pan, and Rotation."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.scene = QGraphicsScene(self)
+        self.setScene(self.scene)
+        self.pixmap_item = QGraphicsPixmapItem()
+        self.scene.addItem(self.pixmap_item)
+        
+        self.setRenderHint(QPainter.Antialiasing)
+        self.setRenderHint(QPainter.SmoothPixmapTransform)
+        self.setDragMode(QGraphicsView.ScrollHandDrag) # Click and drag to pan
+        self.setStyleSheet("background-color: #1e1e1e; border: none;")
+        self.zoom_factor = 1.0
+
+    def load_file(self, filepath):
+        pixmap = QPixmap(filepath)
+        self.pixmap_item.setPixmap(pixmap)
+        self.scene.setSceneRect(self.pixmap_item.boundingRect())
+        self.reset_view()
+
+    def reset_view(self):
+        self.zoom_factor = 1.0
+        self.resetTransform()
+        self.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
+
+    def zoom(self, factor):
+        self.zoom_factor *= factor
+        self.scale(factor, factor)
+
+    def rotate_image(self):
+        self.rotate(90)
+
+    def wheelEvent(self, event: QWheelEvent):
+        """Ctrl + Scroll to zoom natively"""
+        if event.modifiers() == Qt.ControlModifier:
+            if event.angleDelta().y() > 0: self.zoom(1.15)
+            else: self.zoom(0.85)
+        else:
+            super().wheelEvent(event)
+
+class DedicatedMediaViewer(QWidget):
+    """Pro Media Player with Timeline, Seek, and Volume Controls."""
+    def __init__(self, is_video=True, parent=None):
+        super().__init__(parent)
+        self.is_video = is_video
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.player = QMediaPlayer()
+        self.audio_output = QAudioOutput()
+        self.player.setAudioOutput(self.audio_output)
+        
+        # 1. Video/Audio Display Area
+        if self.is_video:
+            self.video_widget = QVideoWidget()
+            self.player.setVideoOutput(self.video_widget)
+            self.layout.addWidget(self.video_widget, stretch=1)
+        else:
+            self.audio_lbl = QLabel("🎵\nAudio Playback Active")
+            self.audio_lbl.setAlignment(Qt.AlignCenter)
+            self.audio_lbl.setStyleSheet("background-color: #1e1e1e; color: #4da6ff; font-size: 36px; font-weight: bold;")
+            self.layout.addWidget(self.audio_lbl, stretch=1)
+
+        # 2. Timeline Slider & Time Labels
+        time_layout = QHBoxLayout()
+        self.lbl_current = QLabel("00:00")
+        self.lbl_current.setStyleSheet("color: #d4d4d4;")
+        
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(0, 0)
+        self.slider.sliderMoved.connect(self.set_position)
+        
+        self.lbl_total = QLabel("00:00")
+        self.lbl_total.setStyleSheet("color: #d4d4d4;")
+        
+        time_layout.addWidget(self.lbl_current)
+        time_layout.addWidget(self.slider)
+        time_layout.addWidget(self.lbl_total)
+        self.layout.addLayout(time_layout)
+
+        # 3. Media Controls
+        ctrl_layout = QHBoxLayout()
+        self.btn_play = QPushButton("▶ Play")
+        self.btn_play.clicked.connect(self.toggle_playback)
+        self.btn_stop = QPushButton("⏹ Stop")
+        self.btn_stop.clicked.connect(self.player.stop)
+        
+        ctrl_layout.addStretch()
+        ctrl_layout.addWidget(self.btn_play)
+        ctrl_layout.addWidget(self.btn_stop)
+        ctrl_layout.addStretch()
+        self.layout.addLayout(ctrl_layout)
+
+        # Connect Signals
+        self.player.positionChanged.connect(self.position_changed)
+        self.player.durationChanged.connect(self.duration_changed)
+        self.player.playbackStateChanged.connect(self.state_changed)
+
+    def load_file(self, filepath):
+        self.player.setSource(QUrl.fromLocalFile(filepath))
+        self.player.play()
+
+    def toggle_playback(self):
+        if self.player.playbackState() == QMediaPlayer.PlayingState:
+            self.player.pause()
+        else:
+            self.player.play()
+
+    def seek(self, seconds):
+        new_pos = max(0, min(self.player.position() + (seconds * 1000), self.player.duration()))
+        self.player.setPosition(new_pos)
+
+    def change_volume(self, delta):
+        new_vol = max(0.0, min(1.0, self.audio_output.volume() + delta))
+        self.audio_output.setVolume(new_vol)
+
+    def set_position(self, position):
+        self.player.setPosition(position)
+
+    def position_changed(self, position):
+        self.slider.setValue(position)
+        self.lbl_current.setText(self.format_time(position))
+
+    def duration_changed(self, duration):
+        self.slider.setRange(0, duration)
+        self.lbl_total.setText(self.format_time(duration))
+
+    def state_changed(self, state):
+        if state == QMediaPlayer.PlayingState: self.btn_play.setText("⏸ Pause")
+        else: self.btn_play.setText("▶ Play")
+
+    def format_time(self, ms):
+        s = ms // 1000
+        m, s = divmod(s, 60)
+        h, m = divmod(m, 60)
+        if h > 0: return f"{h:02d}:{m:02d}:{s:02d}"
+        return f"{m:02d}:{s:02d}"
+
+    def clean_up(self):
+        self.player.stop()
+
+class DedicatedTextViewer(QPlainTextEdit):
+    """Pro Text/Code Reader."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setFont(QFont("Consolas", 11))
+        self.setStyleSheet("background-color: #1e1e1e; color: #dcdcaa; border: none; padding: 10px; selection-background-color: #264f78;")
+
+    def load_file(self, filepath):
+        try:
+            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read(2 * 1024 * 1024) 
+                if f.read(1): content += "\n\n... [FILE TRUNCATED FOR PREVIEW. OPEN EXTERNALLY FOR FULL FILE] ..."
+                self.setPlainText(content)
+        except Exception as e:
+            self.setPlainText(f"Failed to read file: {e}")
+
 class InternalViewer(QDialog):
     def __init__(self, table_view, start_row: int, parent=None):
         super().__init__(parent)
         self.table_view = table_view
         self.model = table_view.model()
-        self.current_row = start_row
         
-        self.setWindowTitle("Internal Viewer")
-        self.resize(1000, 800)
+        self.setWindowTitle("Smart Dedicated Viewer")
+        self.resize(1100, 850)
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0,0,0,0)
         self.layout.setSpacing(0)
@@ -210,12 +381,13 @@ class InternalViewer(QDialog):
         self.content_layout.setContentsMargins(0,0,0,0)
         self.layout.addWidget(self.content_widget, stretch=1)
         
+        # Bottom Navigation Bar
         nav_container = QWidget()
         nav_container.setStyleSheet("background-color: #2d2d30; padding: 5px;")
         nav_layout = QHBoxLayout(nav_container)
         
-        self.btn_prev = QPushButton("◀ Prev (Left Arrow)")
-        self.btn_next = QPushButton("Next (Right Arrow) ▶")
+        self.btn_prev = QPushButton("◀ Prev (PageUp)")
+        self.btn_next = QPushButton("Next (PageDown) ▶")
         self.lbl_info = QLabel("")
         self.lbl_info.setStyleSheet("color: white; font-weight: bold;")
         self.lbl_info.setAlignment(Qt.AlignCenter)
@@ -228,128 +400,157 @@ class InternalViewer(QDialog):
         nav_layout.addWidget(self.btn_next)
         self.layout.addWidget(nav_container)
         
-        self.player = None
+        self.current_player = None
+        self.active_category = None
+        self.valid_rows = []
+        self.current_valid_index = 0
+        
+        self._setup_smart_playlist(start_row)
         self.load_file()
 
+    def _setup_smart_playlist(self, start_row):
+        """Locks the playlist to ONLY cycle through files of the exact same category."""
+        start_data = self.model.filtered_rows[start_row]
+        start_ext = start_data.get("ext_meta", "").lower()
+        if not start_ext and start_data.get("display"):
+            start_ext = os.path.splitext(str(start_data["display"][1]))[1].lower()
+
+        if start_ext in IMG_EXTS: self.active_category = IMG_EXTS
+        elif start_ext in VID_EXTS: self.active_category = VID_EXTS
+        elif start_ext in AUD_EXTS: self.active_category = AUD_EXTS
+        elif start_ext in TXT_EXTS: self.active_category = TXT_EXTS
+        else: self.active_category = None # Fallback for unknown files
+
+        for idx, row in enumerate(self.model.filtered_rows):
+            if row.get("is_folder_meta", False): continue
+            ext = row.get("ext_meta", "").lower()
+            if self.active_category is None or ext in self.active_category:
+                self.valid_rows.append(idx)
+
+        try: self.current_valid_index = self.valid_rows.index(start_row)
+        except ValueError: self.current_valid_index = 0
+
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Right: 
-            self.next_file()
-        elif event.key() == Qt.Key_Left: 
-            self.prev_file()
-        elif event.key() == Qt.Key_Escape: 
-            self.close()
-        else: 
+        """Intelligent Keyboard Routing"""
+        key = event.key()
+        
+        # 1. Global Navigation (PageUp / PageDown change files reliably across all viewers)
+        if key == Qt.Key_PageDown: self.next_file()
+        elif key == Qt.Key_PageUp: self.prev_file()
+        elif key == Qt.Key_Escape: self.close()
+        
+        # 2. Image Specific Controls (Arrow keys change image naturally)
+        elif isinstance(self.current_player, DedicatedImageViewer):
+            if key == Qt.Key_Right: self.next_file()
+            elif key == Qt.Key_Left: self.prev_file()
+            elif key in (Qt.Key_Plus, Qt.Key_Equal): self.current_player.zoom(1.15)
+            elif key == Qt.Key_Minus: self.current_player.zoom(0.85)
+            elif key == Qt.Key_0: self.current_player.reset_view()
+            elif key == Qt.Key_R: self.current_player.rotate_image()
+            
+        # 3. Media Specific Controls (Space = Play, Arrows = Seek/Volume)
+        elif isinstance(self.current_player, DedicatedMediaViewer):
+            if key == Qt.Key_Space: self.current_player.toggle_playback()
+            elif key == Qt.Key_Right: self.current_player.seek(5) # Forward 5s
+            elif key == Qt.Key_Left: self.current_player.seek(-5) # Back 5s
+            elif key == Qt.Key_Up: self.current_player.change_volume(0.1) # Vol Up
+            elif key == Qt.Key_Down: self.current_player.change_volume(-0.1) # Vol Down
+            
+        # 4. Text Specific Controls (Arrows scroll natively)
+        elif isinstance(self.current_player, DedicatedTextViewer):
+            super().keyPressEvent(event) # Let the text edit handle arrow scrolling
+        else:
             super().keyPressEvent(event)
 
     def next_file(self):
-        if self.current_row < self.model.rowCount() - 1:
-            self.current_row += 1
+        if self.current_valid_index < len(self.valid_rows) - 1:
+            self.current_valid_index += 1
             self.load_file()
 
     def prev_file(self):
-        if self.current_row > 0:
-            self.current_row -= 1
+        if self.current_valid_index > 0:
+            self.current_valid_index -= 1
             self.load_file()
 
     def load_file(self):
+        # 1. Clean up old player safely
+        if isinstance(self.current_player, DedicatedMediaViewer):
+            self.current_player.clean_up()
+            
         while self.content_layout.count():
             child = self.content_layout.takeAt(0)
-            if child.widget(): 
-                child.widget().deleteLater()
+            if child.widget(): child.widget().deleteLater()
             
-        if self.player:
-            self.player.stop()
-            self.player.deleteLater()
-            self.player = None
+        self.current_player = None
             
-        self.table_view.selectRow(self.current_row)
-        row_data = self.model.filtered_rows[self.current_row]
+        # 2. Grab new file data
+        table_row = self.valid_rows[self.current_valid_index]
+        self.table_view.selectRow(table_row)
+        row_data = self.model.filtered_rows[table_row]
         
-        self.filepath = row_data.get("user_data_1", "")
-        is_f = row_data.get("user_data_2", False)
-        display_list = row_data.get("display", [])
-        filename = str(display_list[1]) if len(display_list) > 1 else "Unknown"
+        filepath = row_data.get("user_data_1", "")
+        filename = str(row_data.get("display", [])[1]) if len(row_data.get("display", [])) > 1 else "Unknown"
+        ext = row_data.get("ext_meta", "").lower()
         
-        self.lbl_info.setText(f"{self.current_row + 1} / {self.model.rowCount()} : {filename}")
+        # 3. Update Labels
+        cat_name = "Files"
+        if self.active_category == IMG_EXTS: cat_name = "Images"
+        elif self.active_category == VID_EXTS: cat_name = "Videos"
+        elif self.active_category == AUD_EXTS: cat_name = "Audio"
+        elif self.active_category == TXT_EXTS: cat_name = "Documents"
         
-        if is_f or not self.filepath or not os.path.exists(self.filepath):
-            lbl = QLabel(f"Cannot preview '{filename}'.\nItem is either a folder or missing from physical disk.")
+        self.lbl_info.setText(f"{cat_name}: {self.current_valid_index + 1} / {len(self.valid_rows)} | {filename}")
+        self.setWindowTitle(f"{cat_name} Viewer - {filename}")
+        
+        if not filepath or not os.path.exists(filepath):
+            lbl = QLabel(f"Cannot preview '{filename}'.\nItem is missing from physical disk.")
             lbl.setAlignment(Qt.AlignCenter)
             lbl.setStyleSheet("color: #d4d4d4; font-size: 16px;")
             self.content_layout.addWidget(lbl)
             return
+
+        # 4. Launch Dedicated Player
+        if ext in IMG_EXTS:
+            self.current_player = DedicatedImageViewer()
+            self.content_layout.addWidget(self.current_player)
+            hint = QLabel("<b>Shortcuts:</b> [Left/Right] Change Image | [Ctrl+Scroll] Zoom | [0] Fit | [R] Rotate")
+            hint.setStyleSheet("background-color: #1e1e1e; color: #888; padding: 5px;")
+            hint.setAlignment(Qt.AlignCenter)
+            self.content_layout.addWidget(hint)
             
-        self.setWindowTitle(f"Viewer - {filename}")
-        ext = os.path.splitext(self.filepath)[1].lower()
-        
-        img_exts = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".ico"}
-        txt_exts = {".txt", ".log", ".csv", ".py", ".json", ".xml", ".ini", ".md", ".html", ".css", ".js"}
-        media_exts = {".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".mp3", ".wav", ".aac", ".ogg", ".flac"}
-        
-        if ext in img_exts: 
-            self._load_image()
-        elif ext in txt_exts: 
-            self._load_text()
-        elif ext in media_exts and MULTIMEDIA_AVAILABLE: 
-            self._load_media()
+        elif ext in TXT_EXTS:
+            self.current_player = DedicatedTextViewer()
+            self.content_layout.addWidget(self.current_player)
+            
+        elif ext in VID_EXTS and MULTIMEDIA_AVAILABLE:
+            self.current_player = DedicatedMediaViewer(is_video=True)
+            self.content_layout.addWidget(self.current_player)
+            hint = QLabel("<b>Shortcuts:</b> [Space] Play/Pause | [Left/Right] Seek 5s | [Up/Down] Volume | [PageUp/Down] Change File")
+            hint.setStyleSheet("background-color: #1e1e1e; color: #888; padding: 5px;")
+            hint.setAlignment(Qt.AlignCenter)
+            self.content_layout.addWidget(hint)
+            
+        elif ext in AUD_EXTS and MULTIMEDIA_AVAILABLE:
+            self.current_player = DedicatedMediaViewer(is_video=False)
+            self.content_layout.addWidget(self.current_player)
+            hint = QLabel("<b>Shortcuts:</b> [Space] Play/Pause | [Left/Right] Seek 5s | [Up/Down] Volume | [PageUp/Down] Change File")
+            hint.setStyleSheet("background-color: #1e1e1e; color: #888; padding: 5px;")
+            hint.setAlignment(Qt.AlignCenter)
+            self.content_layout.addWidget(hint)
+            
         else:
-            lbl = QLabel(f"No internal viewer available for {ext} files.\nRight-click item -> 'Open Local File (System Default)' to open externally.")
+            lbl = QLabel(f"No dedicated player for {ext} files.\nPress 'Esc' and right-click to open externally.")
             lbl.setAlignment(Qt.AlignCenter)
             lbl.setStyleSheet("color: #d4d4d4; font-size: 14px;")
             self.content_layout.addWidget(lbl)
+            return
 
-    def _load_image(self):
-        self.img_label = ScaledImageLabel()
-        self.img_label.setPixmap(QPixmap(self.filepath))
-        self.content_layout.addWidget(self.img_label)
-
-    def _load_text(self):
-        text_edit = QPlainTextEdit()
-        text_edit.setReadOnly(True)
-        text_edit.setFont(QFont("Consolas", 10))
-        text_edit.setStyleSheet("background-color: #1e1e1e; color: #d4d4d4; border: none; padding: 10px;")
-        try:
-            with open(self.filepath, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read(2 * 1024 * 1024) 
-                if f.read(1): 
-                    content += "\n\n... [FILE TRUNCATED FOR PREVIEW. OPEN IN NATIVE EDITOR FOR FULL FILE] ..."
-                text_edit.setPlainText(content)
-        except Exception as e:
-            text_edit.setPlainText(f"Failed to read file: {e}")
-        self.content_layout.addWidget(text_edit)
-
-    def _load_media(self):
-        self.player = QMediaPlayer()
-        self.audio_output = QAudioOutput()
-        self.player.setAudioOutput(self.audio_output)
-        
-        self.video_widget = QVideoWidget()
-        self.content_layout.addWidget(self.video_widget, stretch=1)
-        self.player.setVideoOutput(self.video_widget)
-        
-        ctrl_widget = QWidget()
-        ctrl_layout = QHBoxLayout(ctrl_widget)
-        btn_play = QPushButton("▶ Play")
-        btn_pause = QPushButton("⏸ Pause")
-        btn_stop = QPushButton("⏹ Stop")
-        
-        btn_play.clicked.connect(self.player.play)
-        btn_pause.clicked.connect(self.player.pause)
-        btn_stop.clicked.connect(self.player.stop)
-        
-        ctrl_layout.addStretch()
-        ctrl_layout.addWidget(btn_play)
-        ctrl_layout.addWidget(btn_pause)
-        ctrl_layout.addWidget(btn_stop)
-        ctrl_layout.addStretch()
-        self.content_layout.addWidget(ctrl_widget)
-        
-        self.player.setSource(QUrl.fromLocalFile(self.filepath))
-        self.player.play()
+        # Load the actual file data into the player
+        self.current_player.load_file(filepath)
 
     def closeEvent(self, event):
-        if self.player: 
-            self.player.stop()
+        if isinstance(self.current_player, DedicatedMediaViewer):
+            self.current_player.clean_up()
         super().closeEvent(event)
 
 # ---------------- Database ----------------
