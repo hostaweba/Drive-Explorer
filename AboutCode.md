@@ -1,93 +1,107 @@
-# Technical Architecture: Drive Explorer
 
-## 1. Overview
-Drive Explorer is a multi-threaded, PySide6-based desktop application designed for high-performance file cataloging, indexing, and virtual management. It relies heavily on an embedded SQLite database optimized for large-scale hierarchical and relational data processing, bypassing native OS file system limitations for offline drives.
+# Technical Info: Drive Explorer 🛠️
 
-## 2. Technology Stack & Dependencies
-* **Core Language:** Python 3.8+ (relies on `from __future__ import annotations` and type hinting).
-* **GUI Framework:** `PySide6` (Qt for Python). Utilizes `QtWidgets`, `QtCore`, `QtGui`, and optionally `QtMultimedia` for the internal media player.
-* **Database:** Built-in `sqlite3` engine.
-* **Data Analysis & Visualization (Optional):** `pandas` and `matplotlib.backends.backend_qtagg` for rendering complex statistical charts directly into the Qt application.
-* **Concurrency:** `concurrent.futures.ThreadPoolExecutor` for I/O bound OS-level scanning, and `PySide6.QtCore.QThread` for asynchronous GUI tasks and SQL querying.
+## 1. Architectural Overview
+Drive Explorer is a high-performance desktop application designed for large-scale file indexing, offline browsing, and media consumption. 
 
-## 3. Database Architecture (SQLite)
-The application uses a highly optimized SQLite database (`catalog.db`) to store file metadata. 
+The codebase has been refactored from a monolithic script into a strict **Modular Architecture**. This separation of concerns ensures that the Presentation Layer (UI), Data Layer (Database), and Concurrency Layer (Threads) are completely decoupled, making the application highly maintainable, scalable, and easy to debug.
 
-### 3.1. Performance Pragmas
-To handle millions of rows efficiently, the connection initializes with aggressive performance pragmas:
-* `PRAGMA journal_mode=WAL;` (Write-Ahead Logging for concurrent reads/writes)
-* `PRAGMA synchronous=NORMAL;`
-* `PRAGMA mmap_size=268435456;` (Memory mapping up to 256MB)
-* `PRAGMA temp_store=MEMORY;` (Keeps temporary tables and indices in RAM)
+## 2. Tech Stack & Dependencies
+* **Core Language:** Python 3.8+
+* **GUI Framework:** PySide6 (Qt for Python)
+* **Database:** SQLite3 (Native)
+* **Concurrency:** `concurrent.futures.ThreadPoolExecutor` and `PySide6.QtCore.QThread`
+* **Data Visualization:** `matplotlib`, `pandas` (Optional/Dynamic imports)
+* **Media Handling:** `PySide6.QtMultimedia`, `PySide6.QtMultimediaWidgets`
 
-### 3.2. Schema
-* **`drives`**: Tracks indexed drives (`drive_name`, `purchase_date`, `scanned_at`, `csv_path`).
-* **`files`**: The core catalog. Stores file metadata (`relpath`, `name`, `size`, `extension`, `modified`, `sha`, `drive`, `fullpath`, `is_folder`).
-* **`myspace`**: Represents the virtual Sandbox. Uses an adjacency-list style model (`parent_path`, `name`, `is_folder`, `real_path`, `size`, `extension`, `modified`) to construct virtual trees independent of physical constraints.
+## 3. Directory Structure & Module Responsibilities
 
-### 3.3. Indexing Strategy
-Extensive indexing is applied to `files` columns (`relpath`, `name`, `sha`, `drive`, `is_folder`, `extension`, `size`, `modified`) to ensure rapid querying during Global Search and Duplicate Comparison.
+The application follows a standard MVC-inspired structure:
 
-## 4. Concurrency & Threading Model
-To maintain a responsive 60FPS UI while processing millions of records, the app extensively uses background workers inherited from `QThread`. Communication with the main thread is handled strictly via Qt `Signal`s.
+```text
+DriveExplorer/
+│
+├── main.py                  # The Application Bootstrapper
+├── config.py                # Centralized Environment Variables & Constants
+├── utils.py                 # Pure Python Helper Functions
+│
+├── database/
+│   └── db_manager.py        # Data Access Object (DAO) for SQLite
+│
+├── workers/
+│   └── threads.py           # Background processing (Concurrency)
+│
+└── ui/
+    ├── main_window.py       # Core UI Layout and Tab Routing
+    ├── tables.py            # QAbstractTableModel implementations
+    ├── viewers.py           # Dedicated Media/Image/Text Player classes
+    └── dialogs.py           # Modal popup management
+```
 
-* **`ScanThread`**: Uses `os.walk` paired with a `ThreadPoolExecutor` to concurrently hash (`hashlib.sha256`) and `os.stat` files. Batches SQL `INSERT` statements in chunks of 2,000 to maximize disk write throughput.
-* **`SearchThread`**: Executes heavy `LIKE` queries in the background, emitting lists of tuples upon completion.
-* **`ChartWorker`**: Offloads complex analytical SQL aggregations (e.g., grouping by year, extension, or cross-joining for drive overlap) to prevent UI blocking before passing data to Pandas/Matplotlib.
-* **`CompareThread`**: Executes complex, multi-layered SQL subqueries to find overlapping sets (SHA duplicates, name conflicts, missing files) across selected drives.
-* **`ImageLoader`**: Asynchronously loads and scales preview images using `QPixmap` to prevent the UI thread from hanging on massive image files.
+### Module Breakdown
+* **`config.py`**: Defines all static paths (`DATA_DIR`, `DB_FILE`) and constants (`MAX_RENDER_ROWS`). Imported globally.
 
-## 5. Core UI Components (Model/View)
-The application utilizes Qt's Model/View architecture for high-performance rendering of massive datasets.
+* **`utils.py`**: Contains stateless mathematical and string-parsing logic (`human_size()`, `sha256_file()`). It has zero dependencies on PySide6.
 
-* **`FastTableModel`**: A custom subclass of `QAbstractTableModel`. It maintains an in-memory list of dictionary rows (`all_rows` and `filtered_rows`). It overrides `data()`, `sort()`, and provides a custom `set_advanced_filter()` method for instantaneous in-memory searching without hitting the database repeatedly.
-* **`ActionTableView` & `SandboxTableView`**: Subclasses of `QTableView` implementing drag-and-drop mechanics (`dragEnterEvent`, `dropEvent`) and custom context menus based on the selected row's data.
+* **`db_manager.py`**: Houses the `CatalogDB` class. It manages the SQLite connection using `PRAGMA journal_mode=WAL` for high-speed writes and handles all SQL execution. It is decoupled from the UI.
 
-## 6. Advanced Subsystems
+* **`threads.py`**: Contains all `QThread` classes (`ScanThread`, `CompareThread`, etc.). This isolates heavy blocking operations (like file I/O or SHA-256 hashing) from the main GUI thread, communicating back to the UI strictly via Qt `Signal` emissions.
 
-### 6.1. The SQL Comparison Engine
-Instead of loading dictionaries into Python memory to find duplicates, the app relies heavily on the SQLite engine using `GROUP BY`, `HAVING COUNT(DISTINCT ...)`, and subqueries. 
-* *Example:* Finding files with the same SHA but different relative paths across specific drives is executed entirely within SQL, returning only the final localized result set to Python.
+* **`ui/viewers.py`**: Isolates the complex event handling (key presses, wheel events) and rendering logic for different media types (`QGraphicsView` for images, `QMediaPlayer` for video/audio).
 
-### 6.2. MySpace Sandbox (Virtual File System)
-The Sandbox bypasses physical OS limits by allowing users to create virtual hierarchies. 
-* **Recursive Mapping:** When a physical folder is dropped into the sandbox, the app reconstructs its relative hierarchy inside the `myspace` table using purely string-based `parent_path` logic.
-* **Conflict Resolution:** Includes a custom dialog to handle virtual namespace collisions (Keep Both, Replace, Skip) when copying or moving files within the sandbox.
+## 4. Core Mechanisms & Data Flow
 
-### 6.3. Dynamic Internal Viewer
-The `InternalViewer` dynamically checks file extensions and instantiates the appropriate PySide6 widget:
-* `ScaledImageLabel` for graphics.
-* `QPlainTextEdit` for text/code (truncating at 2MB to prevent memory exhaustion).
-* `QMediaPlayer` and `QVideoWidget` for audio/video playback (if OS codecs are present).
+### A. High-Speed Indexing (The `ScanThread`)
+File scanning is bottlenecked by disk I/O, not CPU. To achieve maximum throughput:
+1. `os.walk()` rapidly builds a flat list of all target paths.
 
-# Architecture Evaluation: Pros and Cons
+2. A `ThreadPoolExecutor` dispatches multiple worker threads to run `os.stat()` and (optionally) `hashlib.sha256()` concurrently.
 
-This document outlines the technical strengths and limitations of the Drive Explorer application based on its current codebase and design patterns.
+3. Results are batched (default size: 2000) and bulk-inserted into SQLite via `executemany()` to minimize database lock contention.
 
-## ✅ Pros (Strengths)
+### B. UI Concurrency via Signals
+To prevent GUI freezing during database operations, workers emit signals.
+* **Example Flow:** User clicks "Scan" -> `main_window.py` instantiates `ScanThread` -> Connects `ScanThread.progress(int)` to `QProgressDialog.setValue` -> Starts thread. The UI updates natively without blocking.
 
-* **Highly Optimized Database Engine:** By using SQLite with aggressive pragmas (`WAL` mode, 256MB `mmap_size`, and in-memory temp stores), the application overcomes standard file system bottlenecks, allowing instant querying of massive offline storage arrays.
+### C. The Fast Table Engine
+Rendering 50,000 rows in standard GUI tables causes severe lag. Drive Explorer solves this by using the Model/View architecture:
+* `FastTableModel` inherits from `QAbstractTableModel`.
 
-* **Non-Blocking UI (Concurrency):** The architecture strictly separates I/O and heavy SQL math from the main thread. Using `ThreadPoolExecutor` for disk scanning and `QThread` for background SQL/chart processing ensures the PySide6 GUI remains responsive at 60FPS.
+* Data is stored natively as a list of dictionaries in Python memory.
 
-* **Virtualization Safety:** The MySpace Sandbox operates entirely on an adjacency-list SQL model (`parent_path`, `name`). This allows users to reorganize, rename, and resolve conflicts safely without risking data loss on the physical disk.
+* The table only renders the cells currently visible on the screen, allowing instant scrolling and instantaneous, layout-level filtering.
 
-* **Powerful In-Memory Filtering:** The `FastTableModel` architecture caches the current directory's rows in memory. Filtering via the search bar manipulates this internal list instantly without executing a new `SELECT` query for every keystroke.
+### D. Dedicated Viewers Architecture
+Instead of a single, bloated viewer class, media rendering uses a Factory-like pattern based on file extensions:
+* **Image Logic:** Utilizes `QGraphicsScene` for hardware-accelerated rendering, allowing precise coordinate transformations (zooming via matrix scaling, rotation).
 
-* **Extensive Duplicate Detection:** The SQL Comparison engine natively handles complex cross-drive set theory (e.g., finding identical SHA hashes with different relative paths) cleanly via SQL subqueries rather than loading data into Python RAM.
+* **Media Logic:** Instantiates `QMediaPlayer`. Audio files dynamically swap the `QVideoWidget` for a lightweight `QLabel` overlay to conserve resources.
 
-* **Offline First & Portable:** Designed to operate completely offline. Drive catalogs can be exported and imported seamlessly via CSV files, making it easy to share drive indexes across different machines.
+* **Keyboard Routing:** Key events are handled locally within the dedicated viewer classes using dynamic `QShortcut` arrays that are cleared and rebuilt when the media type changes, preventing input conflicts.
 
-## ❌ Cons (Limitations & Bottlenecks)
+## 5. Developer Guide: How to Extend the App
 
-* **Monolithic Code Structure:** The entire application (UI, threading, database logic, viewers) is contained within a single massive Python file. This violates the Single Responsibility Principle and makes testing, debugging, and maintaining the codebase exceptionally difficult.
+### Adding a New Tab
+1. Open `ui/main_window.py`.
 
-* **Memory Intensive Rendering:** While `FastTableModel` is quick, storing tens of thousands of rows containing string data, QIcons, and metadata directly in Python memory can cause RAM bloat on extremely large directories.
+2. Inside `_build_ui()`, instantiate a new `QWidget` and layout.
 
-* **SHA-256 Hashing Overhead:** Computing cryptographic hashes for every file during the scan process is inherently slow and bottlenecked by the physical disk's read speed. Large mechanical HDDs will take significant time to index.
+3. Append it to the main `QTabWidget` via `self.tabs.addTab(new_widget, "Tab Name")`.
 
-* **Lack of Real-Time Syncing:** The catalog is a static snapshot. If a file is modified, deleted, or moved natively via the OS (e.g., Windows Explorer), the database becomes out of sync until a manual re-scan is triggered. It lacks an OS-level file watcher (like `watchdog`).
+### Adding a New Background Task
+1. Open `workers/threads.py`.
 
-* **Heavy Dependency Footprint:** Importing `pandas`, `matplotlib`, and `PySide6.QtMultimedia` results in a very large application binary if compiled (e.g., via PyInstaller). It requires significant overhead just to launch the environment.
+2. Create a new class inheriting from `WorkerBase` or `QThread`.
 
-* **SQLite Concurrency Limits:** Although `WAL` mode helps, SQLite is ultimately a file-based database. If multiple background threads attempt heavy `INSERT` operations while a heavy `SELECT` comparison is running, Python's `sqlite3` driver may still encounter `database is locked` errors under extreme edge cases.
+3. Define your custom `Signal` attributes at the class level.
+
+4. Override the `run(self)` method with your blocking logic.
+
+5. In `ui/main_window.py`, instantiate the thread, connect its signals to your UI slots, and register it using `self._register_worker()`.
+
+### Modifying the Database Schema
+1. Open `database/db_manager.py`.
+
+2. Update the SQL strings in `_ensure_schema()`.
+
+3. Wrap any destructive `ALTER TABLE` statements in `try/except sqlite3.OperationalError` blocks to ensure backward compatibility with existing user databases.

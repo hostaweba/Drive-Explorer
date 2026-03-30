@@ -1,95 +1,104 @@
-# Drive Explorer 
 
-**Drive Explorer** is a high-performance, PySide6-based desktop application designed for unrestricted file searching, cataloging, and analysis across multiple drives. It allows you to index offline storage, visualize disk usage, find duplicates, and build virtual file structures without altering your physical disks.
+# Drive Explorer 🚀
+
+**Drive Explorer** is a high-performance, locally-indexed file management and analysis suite built with Python and PySide6. It allows you to scan massive external drives or local directories, index them into a lightning-fast SQLite database, and analyze, search, and view your files without needing the physical drives continuously connected.
 
 ## ✨ Key Features
 
-* **Fast Global Indexing:** Scan entire drives/folders and store metadata (including SHA-256 hashes) in a highly optimized, WAL-mode SQLite database. Browse disconnected drives offline.
+* **⚡ High-Speed Indexing:** Multi-threaded file scanning with optional SHA-256 hash generation for duplicate detection.
 
-* **⚡ Fast & Global Explorers:** Navigate through massive file structures instantly. Includes ultra-fast search and filtering.
+* **🗄️ Offline Browsing:** Browse the contents of disconnected drives instantly via the Global and Fast Explorer tabs.
 
-* **⭐ MySpace Sandbox:** A virtual filesystem! Drag-and-drop, cut, copy, paste, and organize files into virtual folders without moving the physical files on your disk.
-  
-* **📊 Statistics & Charts:** Generate insightful visualizations (Bar, Line, Horizontal Bar charts) powered by Pandas and Matplotlib. Analyze storage usage by year, top formats, file age distribution, and drive overlap.
-  
-* **🔍 Advanced Search:** Precision querying by item name, folder path, match mode, extension, size ranges, and modification dates.
-  
-* **⚖️ Drive Comparisons:** Select multiple drives to instantly identify exact duplicates (SHA), same-name conflicts, or missing files across backups.
-  
-* **👀 Built-in Internal Viewer:** Preview files directly inside the app without opening external software. Supports images, text/code files, and multimedia (Video/Audio).
-  
-* **📑 Advanced Reports:** Automatically save and review your searches and comparison results as CSV reports.
-  
-* **🎨 Custom Icons & Dark Mode:** Toggleable Dark/Light themes and support for custom file-extension icons.
+* **🔍 Advanced Precision Search:** Filter files globally by size, modification date, extension, or specific match types.
+
+* **📊 Statistics & Analytics:** Interactive, colorful Matplotlib charts visualizing storage usage, file age, format distribution, and drive overlap.
+
+* **📅 Timeline Diary:** A calendar-based activity viewer to see exactly what files were modified on any given day or month.
+
+* **⭐ MySpace Sandbox:** A virtual workspace where you can copy, cut, and organize files into virtual folders without altering the real files on your disk.
+
+* **⚖️ Drive Comparison:** Advanced SQL-driven analysis to find exact duplicates, name conflicts, and missing files across multiple drives.
+
+* **🎬 Dedicated Pro Viewers:** * **Images:** Zoom, pan, rotate, flip, and animated auto-play slideshows.
+
+  * **Media:** Built-in video and audio player with timeline seeking, volume, mute, shuffle, and loop.
+
+  * **Text/Code:** Native syntax viewing with smooth scrolling.
+
+* **⌨️ Keyboard Driven:** Extensive global shortcuts for tab navigation, searching, and media control.
+
+* **🌙 Dark Mode:** Native toggle for a sleek, eye-friendly dark interface.
+
+
+## 🏗️ Project Architecture
+
+The application is built using a clean, modular architecture separating the UI, background workers, and database logic:
+
+```text
+DriveExplorer/
+│
+├── main.py                  # Application entry point
+├── config.py                # Global constants and directory paths
+├── utils.py                 # Standalone helper functions
+│
+├── database/
+│   └── db_manager.py        # SQLite catalog initialization and queries
+│
+├── workers/
+│   └── threads.py           # QThreads for non-blocking scanning, searching, and charting
+│
+└── ui/
+    ├── main_window.py       # Core layout and tab management
+    ├── tables.py            # Custom QAbstractTableModel and View logic
+    ├── dialogs.py           # Pop-up dialogs (e.g., Conflict Resolution)
+    └── viewers.py           # Dedicated media, image, and text players
+```
 
 ## 🛠️ Prerequisites & Installation
 
-### Requirements
-* Python 3.8+
-* `PySide6` (Core GUI framework)
-* `pandas` (Data processing for charts)
-* `matplotlib` (Data visualization)
+**Drive Explorer** requires **Python 3.8+**. 
 
-### Installation
-1. Clone or download the source code.
-2. Install the required dependencies using pip:
-   ```bash
-   pip install PySide6 pandas matplotlib
-   ```
-   *(Optional but recommended)*: To ensure the built-in video and audio player works, make sure your OS has the necessary media codecs installed, as it relies on `PySide6.QtMultimedia`.
+1. **Clone or Download the repository.**
+2. **Install the required dependencies.** It is highly recommended to use a virtual environment.
 
-### Running the App
-Run the script directly from your terminal:
 ```bash
-python drive_explorer.py
+pip install PySide6
 ```
 
-## ⌨️ Keyboard Shortcuts & Controls
+**Optional (but highly recommended) dependencies for advanced features:**
+* For Statistics and Charts: `pip install pandas matplotlib`
 
-The app features several quality-of-life shortcuts to speed up your workflow:
+## 🚀 Usage
 
-| Global Shortcuts | Action |
+To launch Drive Explorer, simply run the `main.py` file from your terminal:
+
+```bash
+python main.py
+```
+
+### Getting Started:
+1. Go to the **Drives Dashboard**.
+2. Click **Scan New Folder** in the top toolbar to index a local directory or external drive.
+3. Once indexed, use the **Global Explorer** or **Fast Explorer** to browse your files instantly.
+4. Double-click any supported image, video, audio, or text file to open the built-in **Pro Viewer**.
+
+## ⌨️ Essential Keyboard Shortcuts
+
+| Shortcut | Action |
 | :--- | :--- |
-| `Ctrl + F` | Focus the filter/search bar. |
-| `Up / Down Arrows` | Navigate tables and auto-update the Details/Image Preview. |
-| `Shift / Ctrl + Click` | Multi-select items (Status bar automatically shows total selected size). |
-| `Enter` | Open the selected folder or launch the real file. |
+| `Ctrl + Tab` / `Ctrl + Shift + Tab` | Navigate between tabs |
+| `Ctrl + 1`, `2`, `3`... | Jump to a specific tab |
+| `Ctrl + F` | Smart focus on the active tab's search bar |
+| `F11` / `Esc` | Toggle Fullscreen / Exit Viewer |
+| `Space` | Play/Pause (in Media Viewer) |
+| `Left / Right Arrows` | Next/Prev Image OR Seek 5s in Media |
+| `Shift + F` / `F` | Flip Image Vertically / Horizontally |
+| `B` | Send media player to background |
+| `Ctrl + M` | Restore background media players |
+| `Ctrl + T` | Toggle Dark/Light Theme |
 
-| MySpace Sandbox | Action |
-| :--- | :--- |
-| `Ctrl + C` | Copy virtual item(s) (Supports folders recursively). |
-| `Ctrl + X` | Cut virtual item(s). |
-| `Ctrl + V` | Paste item(s) into current Sandbox Folder (Features Conflict Resolution). |
-| `Delete` | Remove selected items from the Sandbox (Does **not** delete real files). |
+## 📁 Data Storage
 
-## 📂 Folder Structure & Data Persistence
-
-Upon first run, the app will automatically create the following directories in the same folder as the script:
-* `data/`: Contains the core `catalog.db` SQLite database.
-* `data/csvs/`: Stores CSV backups of your drive scans.
-* `data/old_drives/`: Archives CSVs of deleted drive records.
-* `icons/`: Custom icon directory.
-
-### Custom File Icons
-You can customize the icons used in the explorer views. Simply drop a `.png`, `.jpg`, or `.ico` file into the `icons/` folder and name it after the file extension you want it to represent (e.g., `jpg.png`, `mp4.ico`, `py.png`). The app will automatically map them.
-
-## 🧠 Core Modules Explanation
-
-1.  **Drives Dashboard:** Manage your indexed drives. Add new scans, import CSVs, or delete old indexes.
-
-2.  **Global Explorer:** Navigate your indexed files exactly like a standard file manager, but with the ability to see files from offline/disconnected drives.
-
-3.  **Fast Explorer:** A streamlined, high-speed variant of the global explorer optimized for rapid, flat-list filtering without deep hierarchy calculations.
-
-4.  **MySpace Sandbox:** Create a pristine, organized virtual directory using files scattered across dozens of different drives. You can export this sandbox to a real directory later.
-
-5.  **Advanced Search:** Complex SQL-backed search with multiple parameters.
-
-6.  **Comparisons:** The deduplication engine. Finds exact byte-for-byte duplicates (using SHA-256) or partial matches to help you clean up redundant backups.
-
-7.  **Advanced Reports:** A viewer for all the historical CSV exports you've generated during comparisons and searches.
-
-8.  **Statistics & Charts:** Interactive visual dashboard plotting your data distribution.
-
----
-*Note: Depending on your system, calculating SHA-256 hashes during the initial drive scan can be slow. If you are scanning massive drives and do not need exact duplicate detection, you can uncheck "Compute SHA-256" during the scan prompt.*
+All application data is stored locally within the `data/` folder generated in the root directory upon first launch. 
+* **`catalog.db`**: The SQLite database containing all file metadata.
+* **`csvs/`**: Backups of individual drive scans.
