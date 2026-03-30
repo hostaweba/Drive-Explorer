@@ -1697,62 +1697,74 @@ class DriveExplorerWindow(QMainWindow):
         diary_tab = QWidget()
         dv_main = QVBoxLayout(diary_tab)
 
+        # Top Control Bar
         diary_controls = QHBoxLayout()
         diary_controls.addWidget(QLabel("Drive Filter:"))
         self.diary_drive = QComboBox()
         self.diary_drive.addItem("Any Drive")
+        self.diary_drive.currentIndexChanged.connect(self.refresh_diary_data)
         diary_controls.addWidget(self.diary_drive)
+
+        diary_controls.addWidget(QLabel("Active Years:"))
+        self.diary_year = QComboBox()
+        self.diary_year.currentIndexChanged.connect(self.on_diary_year_changed)
+        diary_controls.addWidget(self.diary_year)
+
+        self.diary_search = QLineEdit()
+        self.diary_search.setPlaceholderText("Filter timeline events (Name, Ext, Path)...")
+        self.diary_search.textChanged.connect(self.apply_diary_filter)
+        diary_controls.addWidget(self.diary_search, stretch=1)
 
         self.btn_refresh_diary = QPushButton("Refresh Activity")
         self.btn_refresh_diary.clicked.connect(self.refresh_diary_data)
         diary_controls.addWidget(self.btn_refresh_diary)
-        diary_controls.addStretch()
         dv_main.addLayout(diary_controls)
 
         diary_split = QSplitter(Qt.Horizontal)
 
-        # Left: Calendar
+        # Left Side: Calendar & Quick Controls
         cal_container = QWidget()
         cal_layout = QVBoxLayout(cal_container)
         cal_layout.addWidget(QLabel("<b>Activity Calendar</b>"))
+        
         self.activity_cal = QCalendarWidget()
         self.activity_cal.setGridVisible(True)
         self.activity_cal.clicked.connect(self.on_diary_date_clicked)
         cal_layout.addWidget(self.activity_cal)
+
+        self.btn_view_timeline = QPushButton("🌟 Load Full Timeline (Recent 25,000)")
+        self.btn_view_timeline.setStyleSheet("background-color: #8e44ad; color: white; font-weight: bold; padding: 8px;")
+        self.btn_view_timeline.clicked.connect(self.load_full_timeline)
+        cal_layout.addWidget(self.btn_view_timeline)
+
         cal_layout.addStretch()
         diary_split.addWidget(cal_container)
 
-        # Right: Views (Day View / Timeline View)
+        # Right Side: Interactive Table View
         right_container = QWidget()
         right_layout = QVBoxLayout(right_container)
+        
+        self.diary_lbl = QLabel("<b>Select a date on the calendar or load the full timeline to view events.</b>")
+        right_layout.addWidget(self.diary_lbl)
 
-        view_controls = QHBoxLayout()
-        self.btn_view_day = QPushButton("Day View")
-        self.btn_view_timeline = QPushButton("Full Timeline Diary")
-        self.btn_view_day.clicked.connect(lambda: self.diary_stack.setCurrentIndex(0))
-        self.btn_view_timeline.clicked.connect(lambda: (self.diary_stack.setCurrentIndex(1), self.load_full_timeline()))
-        view_controls.addWidget(self.btn_view_day)
-        view_controls.addWidget(self.btn_view_timeline)
-        view_controls.addStretch()
-        right_layout.addLayout(view_controls)
-
-        self.diary_stack = QStackedWidget()
-
-        # Page 0: Day View
-        self.day_view = QTextBrowser()
-        self.day_view.setOpenExternalLinks(False)
-        self.diary_stack.addWidget(self.day_view)
-
-        # Page 1: Timeline
-        self.timeline_view = QTextBrowser()
-        self.diary_stack.addWidget(self.timeline_view)
-
-        right_layout.addWidget(self.diary_stack)
+        # Utilize your existing high-speed Table Engine
+        self.diary_table = ActionTableView()
+        self.diary_table.verticalHeader().setVisible(False)
+        self.diary_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.diary_table.horizontalHeader().setStretchLastSection(True)
+        self.diary_table.setSortingEnabled(True)
+        self.diary_table.setAlternatingRowColors(True)
+        
+        # Connect to internal viewer and context menu!
+        self.diary_table.doubleClicked.connect(self.on_diary_table_double_click)
+        self.diary_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.diary_table.customContextMenuRequested.connect(lambda pos: self.file_context_menu(pos, self.diary_table))
+        
+        right_layout.addWidget(self.diary_table)
         diary_split.addWidget(right_container)
-
-        diary_split.setSizes([400, 800])
+        diary_split.setSizes([400, 1200])
+        
         dv_main.addWidget(diary_split)
-
         self.tabs.addTab(diary_tab, "📅 Timeline Diary")
 
         self.status = QStatusBar()
@@ -2224,12 +2236,23 @@ class DriveExplorerWindow(QMainWindow):
         drive = self.diary_drive.currentText()
         df = "" if drive == "Any Drive" else f"AND drive='{drive}'"
 
+        # 1. Update the "Active Years" Dropdown
+        cur.execute(f"SELECT DISTINCT SUBSTR(modified, 1, 4) FROM files WHERE modified != '' {df} ORDER BY 1 DESC")
+        years = [r[0] for r in cur.fetchall() if r[0] and r[0].isdigit()]
+        
+        self.diary_year.blockSignals(True)
+        self.diary_year.clear()
+        if years:
+            self.diary_year.addItems(years)
+        else:
+            self.diary_year.addItem("No Data")
+        self.diary_year.blockSignals(False)
+
+        # 2. Highlight Active Dates on Calendar
         cur.execute(f"SELECT DISTINCT SUBSTR(modified, 1, 10) FROM files WHERE modified != '' {df}")
         dates = [r[0] for r in cur.fetchall() if r[0]]
 
-        # Clear old formats
-        self.activity_cal.setDateTextFormat(QDate(), QTextCharFormat())
-
+        self.activity_cal.setDateTextFormat(QDate(), QTextCharFormat()) # Clear old
         fmt = QTextCharFormat()
         bg_col = QColor(39, 174, 96, 150) if self.is_dark_mode else QColor(46, 204, 113, 100)
         fmt.setBackground(bg_col)
@@ -2239,58 +2262,92 @@ class DriveExplorerWindow(QMainWindow):
             qdate = QDate.fromString(d, "yyyy-MM-dd")
             if qdate.isValid():
                 self.activity_cal.setDateTextFormat(qdate, fmt)
-                
-        # Reload full timeline if it is currently visible
-        if self.diary_stack.currentIndex() == 1:
-            self.load_full_timeline()
+
+    def on_diary_year_changed(self):
+        year = self.diary_year.currentText()
+        if year and year.isdigit():
+            # Jump calendar to January 1st of the selected year
+            self.activity_cal.setSelectedDate(QDate(int(year), 1, 1))
+
+    def apply_diary_filter(self, text):
+        model = self.diary_table.model()
+        if model:
+            model.set_filter(text)
+
+    def on_diary_table_double_click(self, index: QModelIndex):
+        model = self.diary_table.model()
+        if not model: return
+        data = model.data(model.index(index.row(), 1), Qt.UserRole)
+        if not data: return
+        typ, path = data
+        if typ == "folder":
+            # Switch to explorer tab and open folder
+            self.tabs.setCurrentIndex(1)
+            self.load_directory(path)
+            self._sync_tree_to_path(path)
+        else:
+            # Open your custom Internal Viewer natively
+            self.open_local_file("", self.diary_table, index.row())
 
     def on_diary_date_clicked(self, date: QDate):
-        self.diary_stack.setCurrentIndex(0)
         d_str = date.toString("yyyy-MM-dd")
+        self.diary_lbl.setText(f"<b>Activity for {d_str}</b>")
+        
         cur = self.db.conn.cursor()
         drive = self.diary_drive.currentText()
         df = "" if drive == "Any Drive" else f"AND drive='{drive}'"
 
-        cur.execute(f"SELECT SUBSTR(modified, 12, 8), name, relpath, drive, size FROM files WHERE modified LIKE ? {df} ORDER BY modified DESC LIMIT 1000", (f"{d_str}%",))
+        # Fetch detailed file rows for this specific day
+        cur.execute(f"SELECT relpath, name, size, extension, modified, drive, fullpath, is_folder FROM files WHERE modified LIKE ? {df} ORDER BY modified DESC", (f"{d_str}%",))
         rows = cur.fetchall()
-
-        html = f"<div style='font-family: Segoe UI, sans-serif;'><h2 style='color: #4da6ff;'>Activity for {d_str}</h2>"
-        if not rows:
-            html += "<p>No activities detected on this date.</p></div>"
-        else:
-            html += f"<p>Found {len(rows)} modified items (showing up to 1000).</p><ul>"
-            for t, n, rp, d, sz in rows:
-                time_str = t if t else "Unknown Time"
-                html += f"<li style='margin-bottom:8px;'><b>[{time_str}]</b> {n} <span style='color:#888;'>(Size: {human_size(sz)}, Drive: {d})</span><br><small style='color:#aaa;'>{rp}</small></li>"
-            html += "</ul></div>"
-
-        self.day_view.setHtml(html)
+        self._populate_diary_table(rows)
 
     def load_full_timeline(self):
+        self.diary_lbl.setText(f"<b>Full Recent Timeline (Limited to {MAX_RENDER_ROWS} events)</b>")
         cur = self.db.conn.cursor()
         drive = self.diary_drive.currentText()
         df = "" if drive == "Any Drive" else f"AND drive='{drive}'"
 
-        self.timeline_view.setHtml("<h2>Loading Timeline...</h2>")
-        QApplication.processEvents()
+        # Fetch global timeline sorted by newest first
+        cur.execute(f"SELECT relpath, name, size, extension, modified, drive, fullpath, is_folder FROM files WHERE modified != '' {df} ORDER BY modified DESC LIMIT {MAX_RENDER_ROWS}")
+        rows = cur.fetchall()
+        self._populate_diary_table(rows)
 
-        # Group by date
-        cur.execute(f"SELECT SUBSTR(modified, 1, 10) as dt, COUNT(*), SUM(size) FROM files WHERE modified != '' {df} GROUP BY dt ORDER BY dt DESC LIMIT 100")
-        summary = cur.fetchall()
+    def _populate_diary_table(self, rows):
+        self.diary_table.setUpdatesEnabled(False)
+        self.diary_table.setSortingEnabled(False)
+        
+        table_rows = []
+        for r_idx, (rp, n, s, e, m, d, fp, is_f) in enumerate(rows):
+            n_str = str(n) if n else ""
+            if is_f and not n_str:
+                clean_rp = str(rp).rstrip('/')
+                n_str = clean_rp.split('/')[-1] if clean_rp else "/"
+                
+            # Split ISO date into Date and Time for cleaner UI
+            m_str = str(m)
+            dt_part = m_str[:10] if len(m_str) >= 10 else m_str
+            tm_part = m_str[11:19] if len(m_str) >= 19 else ""
 
-        html = "<div style='font-family: Segoe UI, sans-serif;'><h2 style='color: #4da6ff; border-bottom: 1px solid #444; padding-bottom: 5px;'>Recent Activity Timeline (Last 100 Active Days)</h2>"
-        if not summary:
-            html += "<p>No activity recorded yet.</p></div>"
-        else:
-            for dt, cnt, sz in summary:
-                html += f"""
-                <div style='margin-bottom: 15px; border-left: 4px solid #2ecc71; padding-left: 15px; background-color: rgba(46, 204, 113, 0.05); padding-top: 5px; padding-bottom: 5px;'>
-                    <h3 style='margin:0; color:#2ecc71;'>{dt}</h3>
-                    <p style='margin:4px 0 0 0;'>Modified <b>{cnt}</b> items <span style='color:#888;'>({human_size(sz)})</span></p>
-                </div>
-                """
-            html += "</div>"
-        self.timeline_view.setHtml(html)
+            table_rows.append({
+                "display": [str(r_idx+1), dt_part, tm_part, n_str, str(d), human_size(s or 0), str(e) if e else "Folder", str(rp)],
+                "sort_keys": [r_idx+1, (1, dt_part), (1, tm_part), (0 if is_f else 1, n_str.lower()), (0 if is_f else 1, str(d).lower()), (0 if is_f else 1, s or 0), (0 if is_f else 1, str(e).lower() if e else "folder"), (0 if is_f else 1, str(rp).lower())],
+                # This User_Data structure specifically triggers your existing Context Menu correctly
+                "user_data": ("folder" if is_f else "file", str(rp)), 
+                "user_data_1": str(fp) if fp else str(rp), 
+                "user_data_2": bool(is_f), 
+                "ext_meta": e, 
+                "is_folder_meta": bool(is_f)
+            })
+            
+        headers = ["S.No", "Date", "Time", "Name", "Drive", "Size", "Type", "RelPath"]
+        model = FastTableModel(headers, table_rows, self._get_icon)
+        self.diary_table.setModel(model)
+        
+        cw = self.diary_table.setColumnWidth
+        cw(0, 50); cw(1, 90); cw(2, 80); cw(3, 250); cw(4, 80); cw(5, 80); cw(6, 80)
+        self.diary_table.setSortingEnabled(True)
+        self.diary_table.setUpdatesEnabled(True)
 
     # ---------- Global Explorer ----------
     def refresh_folder_tree(self):
