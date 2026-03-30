@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Drive Explorer 
-Unrestricted Search, Native Viewers, Custom Icons, Full Sandbox, Drive Overlap Analysis
+Unrestricted Search, Native Viewers, Custom Icons, Full Sandbox, Drive Overlap Analysis, Timeline Diary
 """
 from __future__ import annotations
 import csv
@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Tuple
 os.environ["QT_IMAGEIO_DISABLE_ICC"] = "1"
 
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QModelIndex, QAbstractTableModel, QDate, QItemSelection, QUrl
-from PySide6.QtGui import QFont, QPixmap, QAction, QPainter, QIcon, QDragEnterEvent, QDropEvent, QShortcut, QKeySequence
+from PySide6.QtGui import QFont, QPixmap, QAction, QPainter, QIcon, QDragEnterEvent, QDropEvent, QShortcut, QKeySequence, QTextCharFormat, QColor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QToolBar, QFileDialog, QMessageBox,
     QWidget, QVBoxLayout, QLabel, QTabWidget, QListWidget, QListWidgetItem,
@@ -28,7 +28,8 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QPlainTextEdit, QTextEdit, QLineEdit, QComboBox,
     QTableView, QHeaderView, QMenu, QAbstractItemView, QStatusBar,
     QTableWidget, QTableWidgetItem, QStyle, QGridLayout, QDateEdit,
-    QSizePolicy, QCheckBox, QDialog, QFormLayout, QScrollArea
+    QSizePolicy, QCheckBox, QDialog, QFormLayout, QScrollArea,
+    QCalendarWidget, QTextBrowser, QStackedWidget
 )
 
 try:
@@ -1161,16 +1162,14 @@ class DriveExplorerWindow(QMainWindow):
         else: 
             self.open_local_file("", self.fast_table, index.row())
 
-
-
     def on_tab_changed(self, index):
             if self.tabs.tabText(index) == "⭐ MySpace Sandbox":
                 self.load_myspace_directory(self.current_myspace_prefix)
                 self.refresh_myspace_tree()
             elif self.tabs.tabText(index) == "⚡ Fast Explorer":
                 self.load_fast_directory(self.current_fast_prefix)            
-            
-            
+            elif self.tabs.tabText(index) == "📅 Timeline Diary":
+                self.refresh_diary_data()
 
     def _load_custom_icons(self):
         if ICONS_DIR.exists():
@@ -1348,8 +1347,6 @@ class DriveExplorerWindow(QMainWindow):
         
         self.tabs.addTab(explorer_tab, "Global Explorer")
         
-# === INSERT THIS RIGHT BEFORE "# 3. MySpace Sandbox Tab" ===
-
         # 2.5. Fast Explorer Tab
         fast_tab = QWidget()
         fv = QVBoxLayout(fast_tab)
@@ -1696,6 +1693,68 @@ class DriveExplorerWindow(QMainWindow):
             
         self.tabs.addTab(charts_tab, "📊 Statistics & Charts")
 
+        # 8. Activity Timeline Diary Tab
+        diary_tab = QWidget()
+        dv_main = QVBoxLayout(diary_tab)
+
+        diary_controls = QHBoxLayout()
+        diary_controls.addWidget(QLabel("Drive Filter:"))
+        self.diary_drive = QComboBox()
+        self.diary_drive.addItem("Any Drive")
+        diary_controls.addWidget(self.diary_drive)
+
+        self.btn_refresh_diary = QPushButton("Refresh Activity")
+        self.btn_refresh_diary.clicked.connect(self.refresh_diary_data)
+        diary_controls.addWidget(self.btn_refresh_diary)
+        diary_controls.addStretch()
+        dv_main.addLayout(diary_controls)
+
+        diary_split = QSplitter(Qt.Horizontal)
+
+        # Left: Calendar
+        cal_container = QWidget()
+        cal_layout = QVBoxLayout(cal_container)
+        cal_layout.addWidget(QLabel("<b>Activity Calendar</b>"))
+        self.activity_cal = QCalendarWidget()
+        self.activity_cal.setGridVisible(True)
+        self.activity_cal.clicked.connect(self.on_diary_date_clicked)
+        cal_layout.addWidget(self.activity_cal)
+        cal_layout.addStretch()
+        diary_split.addWidget(cal_container)
+
+        # Right: Views (Day View / Timeline View)
+        right_container = QWidget()
+        right_layout = QVBoxLayout(right_container)
+
+        view_controls = QHBoxLayout()
+        self.btn_view_day = QPushButton("Day View")
+        self.btn_view_timeline = QPushButton("Full Timeline Diary")
+        self.btn_view_day.clicked.connect(lambda: self.diary_stack.setCurrentIndex(0))
+        self.btn_view_timeline.clicked.connect(lambda: (self.diary_stack.setCurrentIndex(1), self.load_full_timeline()))
+        view_controls.addWidget(self.btn_view_day)
+        view_controls.addWidget(self.btn_view_timeline)
+        view_controls.addStretch()
+        right_layout.addLayout(view_controls)
+
+        self.diary_stack = QStackedWidget()
+
+        # Page 0: Day View
+        self.day_view = QTextBrowser()
+        self.day_view.setOpenExternalLinks(False)
+        self.diary_stack.addWidget(self.day_view)
+
+        # Page 1: Timeline
+        self.timeline_view = QTextBrowser()
+        self.diary_stack.addWidget(self.timeline_view)
+
+        right_layout.addWidget(self.diary_stack)
+        diary_split.addWidget(right_container)
+
+        diary_split.setSizes([400, 800])
+        dv_main.addWidget(diary_split)
+
+        self.tabs.addTab(diary_tab, "📅 Timeline Diary")
+
         self.status = QStatusBar()
         self.setStatusBar(self.status)
         self.selected_label = QLabel("0 selected")
@@ -1771,7 +1830,7 @@ class DriveExplorerWindow(QMainWindow):
             dark_ss = """
                 QMainWindow, QWidget { background-color: #1e1e1e; color: #d4d4d4; }
                 QTableWidget, QTreeWidget, QListWidget, QTableView { background-color: #252526; color: #d4d4d4; border: 1px solid #3e3e42; alternate-background-color: #2d2d30; }
-                QTextEdit, QPlainTextEdit { background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #3e3e42; }
+                QTextEdit, QTextBrowser, QPlainTextEdit { background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #3e3e42; }
                 QTableView::indicator, QTableWidget::indicator { width: 18px; height: 18px; }
                 QHeaderView::section { background-color: #333333; color: #ffffff; padding: 4px; border: 1px solid #3e3e42; }
                 QLineEdit, QComboBox, QDateEdit, QSpinBox { background-color: #333333; color: #d4d4d4; border: 1px solid #555; padding: 3px; border-radius: 3px; }
@@ -1782,6 +1841,9 @@ class DriveExplorerWindow(QMainWindow):
                 QToolBar { border: none; background-color: #2d2d30; }
                 QMenu { background-color: #252526; color: #d4d4d4; border: 1px solid #3e3e42; }
                 QMenu::item:selected { background-color: #0e639c; }
+                QCalendarWidget QWidget { alternate-background-color: #252526; }
+                QCalendarWidget QAbstractItemView:enabled { color: #d4d4d4; background-color: #1e1e1e; selection-background-color: #0e639c; selection-color: white; }
+                QCalendarWidget QAbstractItemView:disabled { color: #555; }
             """
             self.setStyleSheet(dark_ss)
             self.address_bar.setStyleSheet("background-color: #333333; color: #ffffff; padding: 4px; font-weight: bold; border: 1px solid #555;")
@@ -1791,6 +1853,7 @@ class DriveExplorerWindow(QMainWindow):
             self.address_bar.setStyleSheet("background-color: #ffffff; color: #000000; padding: 4px; font-weight: bold; border: 1px solid #ccc;")
             self.ms_address_bar.setStyleSheet("background-color: #e8f4f8; color: #000000; padding: 4px; font-weight: bold; border: 1px solid #b8daff;")
         self.update_charts() 
+        self.refresh_diary_data()
 
     def _register_worker(self, worker: QThread):
         self._workers.append(worker)
@@ -1832,6 +1895,7 @@ class DriveExplorerWindow(QMainWindow):
             self.update_charts()
             dlg.setValue(6)
             QApplication.processEvents()
+            self.refresh_diary_data()
         finally:
             QApplication.restoreOverrideCursor()
             dlg.close()
@@ -1853,6 +1917,10 @@ class DriveExplorerWindow(QMainWindow):
         self.fast_drive.clear()
         self.fast_drive.addItem("Any Drive")        
         
+        self.diary_drive.blockSignals(True)
+        self.diary_drive.clear()
+        self.diary_drive.addItem("Any Drive")
+
         summary = self.db.drives_summary()
         self.drives_table.setRowCount(len(summary))
         self.load_fast_directory("")
@@ -1863,6 +1931,7 @@ class DriveExplorerWindow(QMainWindow):
             self.as_drive.addItem(drive_name)
             self.stat_drive.addItem(drive_name)
             self.fast_drive.addItem(drive_name)
+            self.diary_drive.addItem(drive_name)
             
             chk_widget = QWidget()
             chk_layout = QHBoxLayout(chk_widget)
@@ -1889,8 +1958,10 @@ class DriveExplorerWindow(QMainWindow):
         self.ex_drive.blockSignals(False)
         self.as_drive.blockSignals(False)
         self.stat_drive.blockSignals(False)
+        self.diary_drive.blockSignals(False)
         self.drives_table.setSortingEnabled(True)
         self.update_selected_label()
+        self.refresh_diary_data()
 
     def update_selected_label(self):
         self.selected_label.setText(f"{len(self.selected_drives())} selected")
@@ -1960,20 +2031,16 @@ class DriveExplorerWindow(QMainWindow):
         ax.set_axis_off()
         self.canvas.draw()
         
-
-
-# INSIDE `update_charts(self)` Replace the thread block with this:
         if self.chart_thread and self.chart_thread.isRunning():
             self.chart_thread.cancel()
             self.chart_thread.wait()
             
         self.chart_thread = ChartWorker(DB_FILE, mode, c_type, target_drive, d_from, d_to, self)
         self.chart_thread.finished_data.connect(self._render_chart_data)
-        self.chart_thread.progress.connect(self._update_chart_progress) # <--- ADDED
+        self.chart_thread.progress.connect(self._update_chart_progress) 
         self.chart_thread.error.connect(lambda e: print(f"Chart Error: {e}"))
         self.chart_thread.start()
 
-    # ADD THIS NEW FUNCTION directly below update_charts:
     def _update_chart_progress(self, pct):
         if not self.figure: return
         self.figure.clear()
@@ -1986,8 +2053,6 @@ class DriveExplorerWindow(QMainWindow):
         ax.set_axis_off()
         self.canvas.draw()        
         
-        
-
     def _render_chart_data(self, mode, c_type, target_drive, data):
         if not self.figure: 
             return
@@ -2152,6 +2217,80 @@ class DriveExplorerWindow(QMainWindow):
             self.canvas.draw()
         except Exception as e: 
             print(f"Chart error: {e}")
+
+    # ---------- Timeline Diary Logic ----------
+    def refresh_diary_data(self):
+        cur = self.db.conn.cursor()
+        drive = self.diary_drive.currentText()
+        df = "" if drive == "Any Drive" else f"AND drive='{drive}'"
+
+        cur.execute(f"SELECT DISTINCT SUBSTR(modified, 1, 10) FROM files WHERE modified != '' {df}")
+        dates = [r[0] for r in cur.fetchall() if r[0]]
+
+        # Clear old formats
+        self.activity_cal.setDateTextFormat(QDate(), QTextCharFormat())
+
+        fmt = QTextCharFormat()
+        bg_col = QColor(39, 174, 96, 150) if self.is_dark_mode else QColor(46, 204, 113, 100)
+        fmt.setBackground(bg_col)
+        fmt.setFontWeight(QFont.Bold)
+
+        for d in dates:
+            qdate = QDate.fromString(d, "yyyy-MM-dd")
+            if qdate.isValid():
+                self.activity_cal.setDateTextFormat(qdate, fmt)
+                
+        # Reload full timeline if it is currently visible
+        if self.diary_stack.currentIndex() == 1:
+            self.load_full_timeline()
+
+    def on_diary_date_clicked(self, date: QDate):
+        self.diary_stack.setCurrentIndex(0)
+        d_str = date.toString("yyyy-MM-dd")
+        cur = self.db.conn.cursor()
+        drive = self.diary_drive.currentText()
+        df = "" if drive == "Any Drive" else f"AND drive='{drive}'"
+
+        cur.execute(f"SELECT SUBSTR(modified, 12, 8), name, relpath, drive, size FROM files WHERE modified LIKE ? {df} ORDER BY modified DESC LIMIT 1000", (f"{d_str}%",))
+        rows = cur.fetchall()
+
+        html = f"<div style='font-family: Segoe UI, sans-serif;'><h2 style='color: #4da6ff;'>Activity for {d_str}</h2>"
+        if not rows:
+            html += "<p>No activities detected on this date.</p></div>"
+        else:
+            html += f"<p>Found {len(rows)} modified items (showing up to 1000).</p><ul>"
+            for t, n, rp, d, sz in rows:
+                time_str = t if t else "Unknown Time"
+                html += f"<li style='margin-bottom:8px;'><b>[{time_str}]</b> {n} <span style='color:#888;'>(Size: {human_size(sz)}, Drive: {d})</span><br><small style='color:#aaa;'>{rp}</small></li>"
+            html += "</ul></div>"
+
+        self.day_view.setHtml(html)
+
+    def load_full_timeline(self):
+        cur = self.db.conn.cursor()
+        drive = self.diary_drive.currentText()
+        df = "" if drive == "Any Drive" else f"AND drive='{drive}'"
+
+        self.timeline_view.setHtml("<h2>Loading Timeline...</h2>")
+        QApplication.processEvents()
+
+        # Group by date
+        cur.execute(f"SELECT SUBSTR(modified, 1, 10) as dt, COUNT(*), SUM(size) FROM files WHERE modified != '' {df} GROUP BY dt ORDER BY dt DESC LIMIT 100")
+        summary = cur.fetchall()
+
+        html = "<div style='font-family: Segoe UI, sans-serif;'><h2 style='color: #4da6ff; border-bottom: 1px solid #444; padding-bottom: 5px;'>Recent Activity Timeline (Last 100 Active Days)</h2>"
+        if not summary:
+            html += "<p>No activity recorded yet.</p></div>"
+        else:
+            for dt, cnt, sz in summary:
+                html += f"""
+                <div style='margin-bottom: 15px; border-left: 4px solid #2ecc71; padding-left: 15px; background-color: rgba(46, 204, 113, 0.05); padding-top: 5px; padding-bottom: 5px;'>
+                    <h3 style='margin:0; color:#2ecc71;'>{dt}</h3>
+                    <p style='margin:4px 0 0 0;'>Modified <b>{cnt}</b> items <span style='color:#888;'>({human_size(sz)})</span></p>
+                </div>
+                """
+            html += "</div>"
+        self.timeline_view.setHtml(html)
 
     # ---------- Global Explorer ----------
     def refresh_folder_tree(self):
