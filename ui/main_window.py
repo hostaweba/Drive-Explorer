@@ -55,7 +55,7 @@ from database.db_manager import CatalogDB
 from workers.threads import CopyThread, SearchThread, ScanThread, ImportThread, ChartWorker, CompareThread
 from ui.tables import FastTableModel, ActionTableView, SandboxTableView, SmartTableItem
 from ui.dialogs import ConflictDialog
-from ui.viewers import InternalViewer, ScaledImageLabel
+from ui.viewers import InternalViewer, ScaledImageLabel, ImageLoader
 
 
 
