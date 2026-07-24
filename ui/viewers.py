@@ -6,11 +6,11 @@ import sys
 
 # --- PySide6 Imports ---
 from PySide6.QtCore import Qt, QTimer, QUrl, QThread, Signal
-from PySide6.QtGui import QWheelEvent, QPainter, QPixmap, QFont, QKeySequence, QShortcut
+from PySide6.QtGui import QWheelEvent, QPainter, QPixmap, QFont, QKeySequence, QShortcut, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
     QPlainTextEdit, QDialog, QGraphicsView, QGraphicsScene, 
-    QGraphicsPixmapItem, QSlider, QProgressBar
+    QGraphicsPixmapItem, QSlider, QProgressBar, QComboBox
 )
 
 # --- PySide6 Multimedia ---
@@ -21,10 +21,6 @@ try:
 except ImportError:
     MULTIMEDIA_AVAILABLE = False
 
-# --- Custom Modules ---
-from utils import human_size  # Required if you keep _format_preview_html here
-
-# -------------- Advanced Internal Viewer  ---------------
 
 # Smart Category Definitions
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".ico"}
@@ -53,7 +49,7 @@ class ScaledImageLabel(QLabel):
     def __init__(self):
         super().__init__()
         self.setAlignment(Qt.AlignCenter)
-        self.setStyleSheet("background-color: #1e1e1e;")
+        self.setStyleSheet("background-color: transparent;")
         self._pixmap = None
         
     def setPixmap(self, pm): 
@@ -79,15 +75,15 @@ class ScaledImageLabel(QLabel):
             painter.drawPixmap((self.width() - scaled.width()) // 2, (self.height() - scaled.height()) // 2, scaled)
 
 
-
-
 class DedicatedImageViewer(QGraphicsView):
-    """Pro Image Viewer with Perfect Fit, Zoom, Pan, Rotation, and Flip."""
+    """Pro Image Viewer with Dynamic View Modes and Webpage-like Scrolling."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
+        
         self.pixmap_item = QGraphicsPixmapItem()
+        self.pixmap_item.setTransformationMode(Qt.SmoothTransformation)
         self.scene.addItem(self.pixmap_item)
         
         self.setRenderHint(QPainter.Antialiasing)
@@ -95,30 +91,78 @@ class DedicatedImageViewer(QGraphicsView):
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.setFrameShape(QGraphicsView.NoFrame)
         self.setContentsMargins(0, 0, 0, 0)
-        self.setStyleSheet("background-color: #121212; border: none;")
+        self.setStyleSheet("background-color: transparent; border: none; outline: none;")
+        
+        # CRITICAL: Forces scrollbar gutter to disappear permanently
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
+        self.setAlignment(Qt.AlignCenter)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+        
         self.zoom_factor = 1.0
+        self.view_mode = "Fit Best"
 
     def load_file(self, filepath):
         pixmap = QPixmap(filepath)
         self.pixmap_item.setPixmap(pixmap)
         self.scene.setSceneRect(self.pixmap_item.boundingRect())
-        QTimer.singleShot(10, self.reset_view)
+        QTimer.singleShot(10, self.apply_view_mode)
 
-    def reset_view(self):
-        self.zoom_factor = 1.0
+    def set_view_mode(self, mode: str):
+        self.view_mode = mode
+        self.apply_view_mode()
+
+    def apply_view_mode(self):
+        if not self.pixmap_item.pixmap() or self.pixmap_item.pixmap().isNull():
+            return
+            
         self.resetTransform()
-        self.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
+        view_rect = self.viewport().rect()
+        img_rect = self.pixmap_item.boundingRect()
+        
+        if img_rect.width() == 0 or img_rect.height() == 0: return
+
+        if self.view_mode == "Fit Best":
+            self.fitInView(img_rect, Qt.KeepAspectRatio)
+            self.zoom_factor = self.transform().m11()
+            
+        elif self.view_mode == "Fit Width (Scroll)":
+            scale = view_rect.width() / img_rect.width()
+            self.scale(scale, scale)
+            self.zoom_factor = scale
+            self.verticalScrollBar().setValue(0)
+            
+        elif self.view_mode == "Fit Height":
+            scale = view_rect.height() / img_rect.height()
+            self.scale(scale, scale)
+            self.zoom_factor = scale
+            self.horizontalScrollBar().setValue(0)
+            
+        elif self.view_mode == "Original Size":
+            self.zoom_factor = 1.0
+            self.centerOn(img_rect.center())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.apply_view_mode()
 
     def zoom(self, factor):
+        self.view_mode = "Custom"
         self.zoom_factor *= factor
         self.scale(factor, factor)
 
     def rotate_image(self):
+        self.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
         self.rotate(90)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
 
     def flip_image(self, horizontal=True):
+        self.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
         if horizontal: self.scale(-1, 1)
         else: self.scale(1, -1)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
 
     def wheelEvent(self, event: QWheelEvent):
         if event.modifiers() == Qt.ControlModifier:
@@ -126,6 +170,7 @@ class DedicatedImageViewer(QGraphicsView):
             else: self.zoom(0.85)
         else:
             super().wheelEvent(event)
+
 
 class DedicatedMediaViewer(QWidget):
     """Pro Media Player with Timeline, Seek, Volume, Mute, Loop, and Shuffle."""
@@ -151,22 +196,26 @@ class DedicatedMediaViewer(QWidget):
         else:
             self.audio_lbl = QLabel("🎵\nLoading Audio...")
             self.audio_lbl.setAlignment(Qt.AlignCenter)
-            self.audio_lbl.setStyleSheet("background-color: #1a1a1a; color: #4da6ff; font-size: 28px; font-weight: bold; border-radius: 10px;")
+            self.audio_lbl.setStyleSheet("background-color: transparent; color: #4da6ff; font-size: 28px; font-weight: bold;")
             self.layout.addWidget(self.audio_lbl, stretch=1)
 
         self.controls_container = QWidget()
         self.controls_layout = QVBoxLayout(self.controls_container)
-        self.controls_layout.setContentsMargins(5,5,5,5)
+        self.controls_layout.setContentsMargins(15,10,15,15)
 
         time_layout = QHBoxLayout()
         self.lbl_current = QLabel("00:00")
-        self.lbl_current.setStyleSheet("color: #d4d4d4; font-weight: bold;")
+        self.lbl_current.setStyleSheet("color: #d4d4d4; font-weight: bold; font-size: 12px;")
         self.slider = QSlider(Qt.Horizontal)
-        self.slider.setStyleSheet("QSlider::handle:horizontal { background: #4da6ff; width: 14px; margin: -4px 0; border-radius: 7px; } QSlider::groove:horizontal { background: #444; height: 6px; border-radius: 3px; }")
+        self.slider.setStyleSheet("""
+            QSlider::handle:horizontal { background: #4da6ff; width: 14px; margin: -4px 0; border-radius: 7px; } 
+            QSlider::groove:horizontal { background: #444; height: 6px; border-radius: 3px; }
+            QSlider::sub-page:horizontal { background: #0e639c; border-radius: 3px; }
+        """)
         self.slider.setRange(0, 0)
         self.slider.sliderMoved.connect(self.set_position)
         self.lbl_total = QLabel("00:00")
-        self.lbl_total.setStyleSheet("color: #d4d4d4; font-weight: bold;")
+        self.lbl_total.setStyleSheet("color: #d4d4d4; font-weight: bold; font-size: 12px;")
         
         time_layout.addWidget(self.lbl_current)
         time_layout.addWidget(self.slider)
@@ -176,7 +225,6 @@ class DedicatedMediaViewer(QWidget):
         ctrl_layout = QHBoxLayout()
         self.btn_shuffle = QPushButton("🔀")
         self.btn_shuffle.setCheckable(True)
-        self.btn_shuffle.setToolTip("Shuffle")
         self.btn_shuffle.clicked.connect(self.toggle_shuffle)
         
         self.btn_play = QPushButton("▶ Play")
@@ -185,12 +233,14 @@ class DedicatedMediaViewer(QWidget):
         
         self.btn_repeat = QPushButton("🔁")
         self.btn_repeat.setCheckable(True)
-        self.btn_repeat.setToolTip("Repeat")
         self.btn_repeat.clicked.connect(self.toggle_repeat)
 
         self.btn_mute = QPushButton("🔊")
-        self.btn_mute.setToolTip("Mute")
         self.btn_mute.clicked.connect(self.toggle_mute)
+        
+        btn_style = "QPushButton { background-color: #2d2d2d; color: white; border-radius: 4px; padding: 6px 12px; border: 1px solid #444; } QPushButton:hover { background-color: #3d3d3d; }"
+        for btn in [self.btn_shuffle, self.btn_play, self.btn_repeat, self.btn_mute]:
+            btn.setStyleSheet(btn_style)
         
         ctrl_layout.addWidget(self.btn_shuffle)
         ctrl_layout.addStretch()
@@ -218,17 +268,17 @@ class DedicatedMediaViewer(QWidget):
 
     def toggle_shuffle(self):
         self.is_shuffle = self.btn_shuffle.isChecked()
-        self.btn_shuffle.setStyleSheet("background-color: #0e639c;" if self.is_shuffle else "")
+        self.btn_shuffle.setStyleSheet("background-color: #0e639c;" if self.is_shuffle else "background-color: #2d2d2d;")
 
     def toggle_repeat(self):
         self.is_repeat = self.btn_repeat.isChecked()
-        self.btn_repeat.setStyleSheet("background-color: #0e639c;" if self.is_repeat else "")
+        self.btn_repeat.setStyleSheet("background-color: #0e639c;" if self.is_repeat else "background-color: #2d2d2d;")
 
     def toggle_mute(self):
         self.is_muted = not self.is_muted
         self.audio_output.setMuted(self.is_muted)
         self.btn_mute.setText("🔇" if self.is_muted else "🔊")
-        self.btn_mute.setStyleSheet("background-color: #c0392b;" if self.is_muted else "")
+        self.btn_mute.setStyleSheet("background-color: #c0392b;" if self.is_muted else "background-color: #2d2d2d;")
 
     def seek(self, seconds):
         new_pos = max(0, min(self.player.position() + (seconds * 1000), self.player.duration()))
@@ -237,7 +287,7 @@ class DedicatedMediaViewer(QWidget):
     def change_volume(self, delta):
         new_vol = max(0.0, min(1.0, self.audio_output.volume() + delta))
         self.audio_output.setVolume(new_vol)
-        if self.is_muted: self.toggle_mute() # Unmute on volume change
+        if self.is_muted: self.toggle_mute() 
 
     def set_position(self, position):
         self.player.setPosition(position)
@@ -277,7 +327,7 @@ class DedicatedTextViewer(QPlainTextEdit):
         super().__init__(parent)
         self.setReadOnly(True)
         self.setFont(QFont("Consolas", 11))
-        self.setStyleSheet("background-color: #1e1e1e; color: #dcdcaa; border: none; padding: 10px; selection-background-color: #264f78;")
+        self.setStyleSheet("background-color: #1e1e1e; color: #dcdcaa; border: none; padding: 20px; selection-background-color: #264f78;")
 
     def load_file(self, filepath):
         try:
@@ -288,27 +338,27 @@ class DedicatedTextViewer(QPlainTextEdit):
         except Exception as e:
             self.setPlainText(f"Failed to read file: {e}")
 
+
 class InternalViewer(QDialog):
     def __init__(self, table_view, start_row: int, parent=None):
         super().__init__(parent)
         self.table_view = table_view
         self.model = table_view.model()
         
-        self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint)
+        self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
         self.setAttribute(Qt.WA_DeleteOnClose)
-        
         self.setWindowTitle("Smart Dedicated Viewer")
         self.resize(1100, 850)
+        
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0,0,0,0)
         self.layout.setSpacing(0)
-        self.setStyleSheet("QDialog { background-color: #121212; }")
+        self.setStyleSheet("QDialog { background-color: #121212; border: none; }")
         
-        # Stylish Autoplay Progress Bar (Hidden by default)
         self.slideshow_bar = QProgressBar()
-        self.slideshow_bar.setFixedHeight(4)
+        self.slideshow_bar.setFixedHeight(3)
         self.slideshow_bar.setTextVisible(False)
-        self.slideshow_bar.setStyleSheet("QProgressBar { background-color: #121212; border: none; } QProgressBar::chunk { background-color: #8e44ad; border-radius: 2px; }")
+        self.slideshow_bar.setStyleSheet("QProgressBar { background-color: #121212; border: none; } QProgressBar::chunk { background-color: #0e639c; }")
         self.slideshow_bar.setVisible(False)
         self.layout.addWidget(self.slideshow_bar)
 
@@ -317,58 +367,106 @@ class InternalViewer(QDialog):
         self.content_layout.setContentsMargins(0,0,0,0)
         self.layout.addWidget(self.content_widget, stretch=1)
         
-        # Universal Navigation Bar
-        self.nav_container = QWidget()
-        self.nav_container.setStyleSheet("background-color: #252526; padding: 8px;")
-        nav_layout = QHBoxLayout(self.nav_container)
-        nav_layout.setContentsMargins(5,5,5,5)
+        # =========================================================
+        # --- UNIFIED SINGLE-ROW BEAUTIFUL TOOL PANEL ---
+        # =========================================================
+        self.tools_container = QWidget()
+        self.tools_container.setStyleSheet("""
+            QWidget { background-color: #161616; border-top: 1px solid #222; }
+            QPushButton { background-color: #252525; color: #eee; border: 1px solid #333; border-radius: 4px; padding: 6px 12px; font-weight: bold; }
+            QPushButton:hover { background-color: #333; border-color: #555; }
+            QPushButton:pressed { background-color: #0e639c; border-color: #0e639c; }
+            QComboBox { background-color: #252525; color: white; border: 1px solid #333; border-radius: 4px; padding: 5px; font-weight: bold; }
+            QComboBox::drop-down { border: none; }
+        """)
         
-        self.btn_close = QPushButton("✖ Close")
-        self.btn_close.setStyleSheet("background-color: #c0392b; color: white; font-weight: bold; border-radius: 4px; padding: 5px 15px;")
-        self.btn_close.clicked.connect(self.close)
-        
-        self.btn_prev = QPushButton("◀ Prev")
-        self.btn_next = QPushButton("Next ▶")
+        tools_layout = QHBoxLayout(self.tools_container)
+        tools_layout.setContentsMargins(15, 8, 15, 8)
+        tools_layout.setSpacing(12)
+
+        # 1. Navigation
+        self.btn_prev = QPushButton("◀")
+        self.btn_prev.setFixedWidth(40)
+        self.btn_prev.clicked.connect(self.prev_file)
         
         self.lbl_info = QLabel("")
-        self.lbl_info.setStyleSheet("color: #ecf0f1; font-weight: bold; font-size: 13px;")
+        self.lbl_info.setStyleSheet("color: #aaa; font-weight: bold; font-size: 13px; border: none;")
         self.lbl_info.setAlignment(Qt.AlignCenter)
+        self.lbl_info.setMinimumWidth(70)
         
-        self.btn_open_ext = QPushButton("↗ Open Externally")
-        self.btn_open_ext.setStyleSheet("background-color: #2980b9; color: white; border-radius: 4px; padding: 5px 10px;")
+        self.btn_next = QPushButton("▶")
+        self.btn_next.setFixedWidth(40)
+        self.btn_next.clicked.connect(self.next_file)
+
+        # 2. View Mode
+        self.combo_view_mode = QComboBox()
+        self.combo_view_mode.addItems(["Fit Best", "Fit Width (Scroll)", "Fit Height", "Original Size"])
+        self.combo_view_mode.currentTextChanged.connect(self.change_view_mode)
+        
+        # 3. Slideshow Controls
+        self.btn_ss_toggle = QPushButton("▶ Slideshow")
+        self.btn_ss_toggle.setCheckable(True)
+        self.btn_ss_toggle.setStyleSheet("QPushButton { background-color: #8e44ad; color: white; border: none; } QPushButton:checked { background-color: #c0392b; }")
+        self.btn_ss_toggle.clicked.connect(self.toggle_slideshow)
+        
+        self.combo_ss_mode = QComboBox()
+        self.combo_ss_mode.addItems(["Switch Files", "Auto-Scroll Down"])
+        
+        self.lbl_speed = QLabel("Speed:")
+        self.lbl_speed.setStyleSheet("color: #777; font-weight: bold; border: none;")
+        
+        self.slider_ss_speed = QSlider(Qt.Horizontal)
+        self.slider_ss_speed.setRange(1, 10)
+        self.slider_ss_speed.setValue(5)
+        self.slider_ss_speed.setFixedWidth(100)
+        
+        # 4. Open External
+        self.btn_open_ext = QPushButton("↗ Open")
+        self.btn_open_ext.setStyleSheet("QPushButton { background-color: #0e639c; color: white; border: none; } QPushButton:hover { background-color: #1177bb; }")
         self.btn_open_ext.clicked.connect(self.open_current_externally)
 
-        self.btn_prev.clicked.connect(self.prev_file)
-        self.btn_next.clicked.connect(self.next_file)
+        # Build Row
+        tools_layout.addWidget(self.btn_prev)
+        tools_layout.addWidget(self.lbl_info)
+        tools_layout.addWidget(self.btn_next)
         
-        nav_layout.addWidget(self.btn_close)
-        nav_layout.addWidget(self.btn_prev)
-        nav_layout.addWidget(self.lbl_info, stretch=1)
-        nav_layout.addWidget(self.btn_next)
-        nav_layout.addWidget(self.btn_open_ext)
-        self.layout.addWidget(self.nav_container)
+        tools_layout.addWidget(self.combo_view_mode)
         
+        tools_layout.addWidget(self.btn_ss_toggle)
+        tools_layout.addWidget(self.combo_ss_mode)
+        tools_layout.addWidget(self.lbl_speed)
+        tools_layout.addWidget(self.slider_ss_speed)
+        
+        tools_layout.addStretch()
+        tools_layout.addWidget(self.btn_open_ext)
+
+        self.layout.addWidget(self.tools_container)
+        
+        # Core State
         self.current_player = None
         self.active_category = None
         self.valid_rows = []
         self.current_valid_index = 0
         self.ui_hidden = False
-        
-        # Smooth Animated Slideshow Logic
-        self.slideshow_timer = QTimer(self)
-        self.slideshow_timer.setInterval(50) # 50ms smooth animation tick
-        self.slideshow_timer.timeout.connect(self._animate_slideshow)
-        self.is_slideshow = False
-        self.slideshow_progress = 0
-        self.slideshow_max = 70 # 70 ticks * 50ms = 3.5 seconds per slide
-        self.slideshow_bar.setMaximum(self.slideshow_max)
-        
         self._dynamic_shortcuts = []
         self.current_filepath = ""
+        
+        # Slideshow Engine
+        self.slideshow_timer = QTimer(self)
+        self.slideshow_timer.setInterval(50) 
+        self.slideshow_timer.timeout.connect(self._animate_slideshow)
+        self.slideshow_progress = 0
+        self.slideshow_max = 100 
+        self.slideshow_bar.setMaximum(self.slideshow_max)
+        self.vertical_delay_counter = 0
         
         self._setup_global_shortcuts()
         self._setup_smart_playlist(start_row)
         self.load_file()
+
+    def change_view_mode(self, mode: str):
+        if isinstance(self.current_player, DedicatedImageViewer):
+            self.current_player.set_view_mode(mode)
 
     def _setup_global_shortcuts(self):
         QShortcut(QKeySequence(Qt.Key_F11), self, self.toggle_fullscreen)
@@ -391,11 +489,11 @@ class InternalViewer(QDialog):
                 QShortcut(QKeySequence(Qt.Key_Plus), self, lambda: self.current_player.zoom(1.15)),
                 QShortcut(QKeySequence(Qt.Key_Equal), self, lambda: self.current_player.zoom(1.15)),
                 QShortcut(QKeySequence(Qt.Key_Minus), self, lambda: self.current_player.zoom(0.85)),
-                QShortcut(QKeySequence(Qt.Key_0), self, self.current_player.reset_view),
+                QShortcut(QKeySequence(Qt.Key_0), self, lambda: self.current_player.set_view_mode("Original Size")),
                 QShortcut(QKeySequence(Qt.Key_R), self, self.current_player.rotate_image),
                 QShortcut(QKeySequence(Qt.Key_F), self, lambda: self.current_player.flip_image(True)),
                 QShortcut(QKeySequence("Shift+F"), self, lambda: self.current_player.flip_image(False)),
-                QShortcut(QKeySequence(Qt.Key_S), self, self.toggle_slideshow)
+                QShortcut(QKeySequence(Qt.Key_S), self, lambda: self.btn_ss_toggle.click())
             ])
         elif isinstance(self.current_player, DedicatedMediaViewer):
             self._dynamic_shortcuts.extend([
@@ -410,21 +508,47 @@ class InternalViewer(QDialog):
             ])
 
     def toggle_slideshow(self):
-        self.is_slideshow = not self.is_slideshow
-        self.slideshow_bar.setVisible(self.is_slideshow)
-        if self.is_slideshow:
+        is_active = self.btn_ss_toggle.isChecked()
+        self.slideshow_bar.setVisible(is_active)
+        
+        if is_active:
+            self.btn_ss_toggle.setText("⏸ Stop")
+            if self.combo_ss_mode.currentIndex() == 1 and isinstance(self.current_player, DedicatedImageViewer):
+                self.combo_view_mode.setCurrentText("Fit Width (Scroll)")
+                
             self.slideshow_progress = 0
+            self.vertical_delay_counter = 0
             self.slideshow_timer.start()
         else:
+            self.btn_ss_toggle.setText("▶ Slideshow")
             self.slideshow_timer.stop()
 
     def _animate_slideshow(self):
-        """Smoothly animates the progress bar and changes image when full"""
-        self.slideshow_progress += 1
-        self.slideshow_bar.setValue(self.slideshow_progress)
-        if self.slideshow_progress >= self.slideshow_max:
-            self.slideshow_progress = 0
-            self.next_file()
+        mode = self.combo_ss_mode.currentIndex()
+        speed = self.slider_ss_speed.value()
+        
+        if mode == 0:
+            increment = speed * 0.5 
+            self.slideshow_progress += increment
+            self.slideshow_bar.setValue(min(100, int(self.slideshow_progress)))
+            
+            if self.slideshow_progress >= self.slideshow_max:
+                self.slideshow_progress = 0
+                self.next_file()
+                
+        elif mode == 1:
+            if isinstance(self.current_player, (DedicatedImageViewer, DedicatedTextViewer)):
+                v_bar = self.current_player.verticalScrollBar()
+                if v_bar.value() < v_bar.maximum():
+                    scroll_pixels = max(1, int(speed * 0.8))
+                    v_bar.setValue(v_bar.value() + scroll_pixels)
+                else:
+                    self.vertical_delay_counter += 1
+                    if self.vertical_delay_counter > (30 / speed):
+                        self.vertical_delay_counter = 0
+                        self.next_file()
+                        if isinstance(self.current_player, DedicatedImageViewer):
+                            QTimer.singleShot(50, lambda: self.current_player.set_view_mode("Fit Width (Scroll)"))
 
     def open_current_externally(self):
         if self.current_filepath and os.path.exists(self.current_filepath):
@@ -456,7 +580,8 @@ class InternalViewer(QDialog):
         except ValueError: self.current_valid_index = 0
 
     def next_file(self):
-        self.slideshow_progress = 0 # Reset animation on manual next
+        self.slideshow_progress = 0 
+        self.vertical_delay_counter = 0
         if isinstance(self.current_player, DedicatedMediaViewer) and self.current_player.is_shuffle:
             if len(self.valid_rows) > 1:
                 new_idx = self.current_valid_index
@@ -465,28 +590,35 @@ class InternalViewer(QDialog):
                 self.current_valid_index = new_idx
                 self.load_file()
             return
-            
         if self.current_valid_index < len(self.valid_rows) - 1: self.current_valid_index += 1
         else: self.current_valid_index = 0
         self.load_file()
 
     def prev_file(self):
-        self.slideshow_progress = 0 # Reset animation on manual prev
+        self.slideshow_progress = 0 
+        self.vertical_delay_counter = 0
         if self.current_valid_index > 0: self.current_valid_index -= 1
         else: self.current_valid_index = len(self.valid_rows) - 1
         self.load_file()
 
     def toggle_fullscreen(self):
-        if self.isFullScreen(): self.showNormal()
-        else: self.showFullScreen()
+        if self.isFullScreen(): 
+            self.showNormal()
+            self.tools_container.setVisible(not self.ui_hidden)
+            self.setStyleSheet("QDialog { background-color: #121212; border: none; outline: none; }")
+        else: 
+            self.showFullScreen()
+            self.tools_container.setVisible(False) 
+            self.setStyleSheet("QDialog { background-color: #000000; border: none; outline: none; margin: 0px; padding: 0px; }")
 
     def handle_escape(self):
-        if self.isFullScreen(): self.showNormal()
+        if self.isFullScreen(): self.toggle_fullscreen()
         else: self.close()
 
     def toggle_ui(self):
         self.ui_hidden = not self.ui_hidden
-        self.nav_container.setVisible(not self.ui_hidden)
+        if not self.isFullScreen():
+            self.tools_container.setVisible(not self.ui_hidden)
         if isinstance(self.current_player, DedicatedMediaViewer):
             self.current_player.controls_container.setVisible(not self.ui_hidden)
 
@@ -508,10 +640,9 @@ class InternalViewer(QDialog):
         filename = str(row_data.get("display", [])[1]) if len(row_data.get("display", [])) > 1 else "Unknown"
         ext = row_data.get("ext_meta", "").lower()
         
-        # Smart Compact Resizing for Audio
         if self.active_category == AUD_EXTS and not self.isFullScreen():
-            self.setMinimumSize(450, 250)
-            self.resize(450, 250)
+            self.setMinimumSize(450, 300)
+            self.resize(450, 300)
         elif not self.isFullScreen():
             self.setMinimumSize(800, 600)
             
@@ -521,9 +652,12 @@ class InternalViewer(QDialog):
         elif self.active_category == AUD_EXTS: cat_name = "Audio"
         elif self.active_category == TXT_EXTS: cat_name = "Documents"
         
-        info_text = f"{cat_name}: {self.current_valid_index + 1} / {len(self.valid_rows)} | {filename}"
-        self.lbl_info.setText(info_text)
+        self.lbl_info.setText(f"[ {self.current_valid_index + 1} / {len(self.valid_rows)} ]")
         self.setWindowTitle(f"{cat_name} Viewer - {filename}")
+        
+        # Hide View Modes & Speed settings for Media Files
+        self.combo_view_mode.setVisible(self.active_category == IMG_EXTS)
+        self.combo_ss_mode.setVisible(self.active_category in (IMG_EXTS, TXT_EXTS))
         
         if not self.current_filepath or not os.path.exists(self.current_filepath):
             lbl = QLabel(f"Cannot preview '{filename}'.\nItem is missing from physical disk.")
@@ -536,20 +670,26 @@ class InternalViewer(QDialog):
             self.current_player = DedicatedImageViewer()
             self.content_layout.addWidget(self.current_player)
             self.current_player.load_file(self.current_filepath)
+            
+            mode = self.combo_view_mode.currentText()
+            QTimer.singleShot(50, lambda: self.current_player.set_view_mode(mode))
+
         elif ext in TXT_EXTS:
             self.current_player = DedicatedTextViewer()
             self.content_layout.addWidget(self.current_player)
             self.current_player.load_file(self.current_filepath)
-            # CRITICAL FIX: Give focus back to Text Editor so Arrow Keys work immediately
             self.current_player.setFocus()
+            
         elif ext in VID_EXTS and MULTIMEDIA_AVAILABLE:
             self.current_player = DedicatedMediaViewer(is_video=True, parent_viewer=self)
             self.content_layout.addWidget(self.current_player)
             self.current_player.load_file(self.current_filepath, filename)
+            
         elif ext in AUD_EXTS and MULTIMEDIA_AVAILABLE:
             self.current_player = DedicatedMediaViewer(is_video=False, parent_viewer=self)
             self.content_layout.addWidget(self.current_player)
             self.current_player.load_file(self.current_filepath, filename)
+            
         else:
             lbl = QLabel(f"No dedicated player for {ext} files.\nPress 'Esc' and click 'Open Externally'.")
             lbl.setAlignment(Qt.AlignCenter)
@@ -570,8 +710,3 @@ class InternalViewer(QDialog):
         if self in self.parent().active_viewers:
             self.parent().active_viewers.remove(self)
         super().closeEvent(event)
-
-
-
-
-
