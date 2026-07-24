@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QTableView, QHeaderView, QMenu, QAbstractItemView, QStatusBar,
     QTableWidget, QTableWidgetItem, QStyle, QGridLayout, QDateEdit,
     QSizePolicy, QCheckBox, QDialog, QFormLayout, QScrollArea,
-    QCalendarWidget, QTextBrowser, QStackedWidget
+    QCalendarWidget, QTextBrowser, QStackedWidget, QDialogButtonBox
 )
 
 # --- Icon Provider Handling ---
@@ -56,8 +56,65 @@ from workers.threads import CopyThread, SearchThread, ScanThread, ImportThread, 
 from ui.tables import FastTableModel, ActionTableView, SandboxTableView, SmartTableItem
 from ui.dialogs import ConflictDialog
 from ui.viewers import InternalViewer, ScaledImageLabel, ImageLoader
+from workers.threads import DeleteDriveThread 
+
+class ImportDetailsDialog(QDialog):
+    def __init__(self, default_name, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Import Drive Data")
+        self.setMinimumWidth(400)
+        layout = QFormLayout(self)
+        
+        self.name_edit = QLineEdit(default_name)
+        self.date_edit = QLineEdit()
+        self.date_edit.setPlaceholderText("MM/YYYY or YYYY-MM-DD (Optional)")
+        self.comment_edit = QLineEdit()
+        self.comment_edit.setPlaceholderText("Add a comment... (Optional)")
+        
+        layout.addRow("Drive Name:", self.name_edit)
+        layout.addRow("Purchase Date:", self.date_edit)
+        layout.addRow("Comment:", self.comment_edit)
+        
+        from PySide6.QtWidgets import QDialogButtonBox
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+        
+    def get_data(self):
+        return self.name_edit.text().strip(), self.date_edit.text().strip(), self.comment_edit.text().strip()
 
 
+class ExtFilterDialog(QDialog):
+    def __init__(self, extensions, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Filter Extensions")
+        self.setMinimumWidth(300)
+        self.layout = QVBoxLayout(self)
+        self.layout.addWidget(QLabel("Uncheck extensions you don't want to see:"))
+        
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        w = QWidget()
+        self.vbox = QVBoxLayout(w)
+        self.checkboxes = {}
+        for ext in sorted(extensions):
+            if not ext: ext = "[No Extension]"
+            chk = QCheckBox(ext)
+            chk.setChecked(True)
+            self.checkboxes[ext] = chk
+            self.vbox.addWidget(chk)
+        self.vbox.addStretch()
+        scroll.setWidget(w)
+        self.layout.addWidget(scroll)
+        
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        self.layout.addWidget(btns)
+        
+    def get_excluded(self):
+        return [ext for ext, chk in self.checkboxes.items() if not chk.isChecked()]
 
 # ---------------- Main window ----------------
 class DriveExplorerWindow(QMainWindow):
@@ -76,6 +133,7 @@ class DriveExplorerWindow(QMainWindow):
         self.last_compare_result = None
         self.chart_thread = None
         self.is_dark_mode = False
+        self.global_drive_filter = []
         
         self.current_explorer_prefix = ""
         self.current_myspace_prefix = "/"
@@ -101,6 +159,7 @@ class DriveExplorerWindow(QMainWindow):
         
         self.tabs.currentChanged.connect(self.on_tab_changed)
         QTimer.singleShot(150, self.refresh_all)
+        
 
 
 # ---------- Fast Explorer Logic ----------
@@ -217,23 +276,37 @@ class DriveExplorerWindow(QMainWindow):
             self._icon_cache[ext] = self.file_icon 
         return self._icon_cache[ext]
 
-    def _format_preview_html(self, model_data: list, title: str, path: str, rows: list) -> str:
+    def _format_preview_html(self, model_data: list, headers: list, title: str, path: str, rows: list) -> str:
         html = f"""
         <div style='font-family: Segoe UI, sans-serif;'>
-            <h3 style='color: #4da6ff;'>{title}</h3>
+            <h3 style='color: #4da6ff; margin-top: 0;'>{title}</h3>
             <table style='width: 100%; border-collapse: collapse; margin-bottom: 15px;'>
-                <tr><td style='padding: 3px; font-weight: bold; width: 80px;'>Path:</td><td style='padding: 3px;'>{path}</td></tr>
+                <tr><td style='padding: 3px; font-weight: bold; width: 110px; color: #aaa;'>Relative Path:</td><td style='padding: 3px;'>{path}</td></tr>
         """
+        
+        # Map headers dynamically (skipping S.No and Name, which are index 0 and 1)
         for i, val in enumerate(model_data[2:]):
-            html += f"<tr><td style='padding: 3px; font-weight: bold;'>Detail {i+1}:</td><td style='padding: 3px;'>{val}</td></tr>"
+            header_idx = i + 2
+            header_name = headers[header_idx] if header_idx < len(headers) else f"Detail {i+1}"
             
+            # Hide empty data rows to keep the UI clean
+            if val and str(val).strip() != "-":
+                html += f"<tr><td style='padding: 3px; font-weight: bold; color: #aaa;'>{header_name}:</td><td style='padding: 3px;'>{val}</td></tr>"
+                
         html += f"""
             </table>
-            <h4 style='color: #4da6ff; border-bottom: 1px solid #444; padding-bottom: 5px;'>Global Presence ({len(rows)} Locations)</h4>
-            <ul style='margin-top: 5px; padding-left: 20px;'>
+            <h4 style='color: #e67e22; border-bottom: 1px solid #555; padding-bottom: 5px; margin-bottom: 5px;'>🌍 Global Presence ({len(rows)} Locations)</h4>
+            <ul style='margin-top: 5px; padding-left: 20px; list-style-type: square;'>
         """
-        for d, full, size, sha in rows:
-            html += f"<li><b>[{d}]</b> {full if full else 'N/A'}<br><span style='color: #aaa; font-size: 11px;'>Size: {human_size(size)} | SHA: {sha[:12] if sha else 'None'}</span></li>"
+        
+        if not rows:
+            html += "<li><span style='color: #aaa;'>No other locations found.</span></li>"
+        else:
+            for d, full, rel, size, sha in rows:
+                # Prioritize showing the physical full path if connected, otherwise show the relative path
+                display_path = full if full else rel
+                html += f"<li style='margin-bottom: 6px;'><b>[{d}]</b> {display_path}<br><span style='color: #888; font-size: 11px;'>Size: {human_size(size)} | SHA: {sha[:12] if sha else 'None'}</span></li>"
+                
         html += "</ul></div>"
         return html
 
@@ -275,13 +348,17 @@ class DriveExplorerWindow(QMainWindow):
         dv.addWidget(QLabel("<b>Drives Dashboard</b>"))
         
         self.drives_table = QTableWidget()
-        self.drives_table.setColumnCount(6)
-        self.drives_table.setHorizontalHeaderLabels(["Use", "Drive Name", "Files", "Total Size", "Age", "Scanned Date"])
+        self.drives_table.setColumnCount(7) 
+        self.drives_table.setHorizontalHeaderLabels(["Use", "Drive Name", "Files", "Total Size", "Age", "Scanned Date", "Comment"])
+        self.drives_table.cellChanged.connect(self.on_drive_comment_changed) # Connect for editable comments
         self.drives_table.verticalHeader().setVisible(False)
         self.drives_table.horizontalHeader().setStretchLastSection(True)
         self.drives_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.drives_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.drives_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        
+        # Allow editing ONLY by double clicking or pressing F2/Enter
+        self.drives_table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
+        
         self.drives_table.setAlternatingRowColors(True)
         self.drives_table.setSortingEnabled(True)
         self.drives_table.setStyleSheet("QCheckBox::indicator:checked { background-color: #0e639c; }")
@@ -292,6 +369,15 @@ class DriveExplorerWindow(QMainWindow):
         self.btn_check_all.clicked.connect(self.check_all_drives)
         self.btn_uncheck_all = QPushButton("Uncheck All")
         self.btn_uncheck_all.clicked.connect(self.uncheck_all_drives)
+        
+        self.btn_apply_global = QPushButton("🌐 Apply as Global Filter to All Tabs")
+        self.btn_apply_global.setStyleSheet("background-color: #0e639c;")
+        self.btn_apply_global.clicked.connect(self.apply_global_drive_filter)
+        
+        self.btn_update_drive = QPushButton("🔄 Update Selected Drive")
+        self.btn_update_drive.setStyleSheet("background-color: #0e639c;")
+        self.btn_update_drive.clicked.connect(self.update_selected_drive)
+        
         self.btn_delete_drive = QPushButton("Delete Selected Drive Data")
         self.btn_delete_drive.clicked.connect(self.delete_selected_drive)
         self.btn_run_compare = QPushButton("Compare Selected Drives")
@@ -299,6 +385,8 @@ class DriveExplorerWindow(QMainWindow):
         
         btns.addWidget(self.btn_check_all)
         btns.addWidget(self.btn_uncheck_all)
+        btns.addWidget(self.btn_apply_global)
+        btns.addWidget(self.btn_update_drive)
         btns.addWidget(self.btn_delete_drive)
         btns.addWidget(self.btn_run_compare)
         btns.addStretch()
@@ -544,6 +632,16 @@ class DriveExplorerWindow(QMainWindow):
         form_layout.addLayout(size_layout, 3, 1)
         form_layout.addWidget(QLabel("Modified:"), 3, 2)
         form_layout.addLayout(date_layout, 3, 3)
+        
+        # Add Exclusions layout right above btn_layout in Advanced Search Tab
+        excl_layout = QHBoxLayout()
+        excl_layout.addWidget(QLabel("Exclude Names (comma separated):"))
+        self.as_exclude_text = QLineEdit()
+        excl_layout.addWidget(self.as_exclude_text)
+        excl_layout.addWidget(QLabel("Exclude Exts:"))
+        self.as_exclude_ext = QLineEdit()
+        excl_layout.addWidget(self.as_exclude_ext)
+        adv_layout.addLayout(excl_layout)
         
         btn_layout = QHBoxLayout()
         self.btn_adv_search = QPushButton("Run Search")
@@ -928,43 +1026,105 @@ class DriveExplorerWindow(QMainWindow):
                 self.rep_filter.selectAll()
 
     def show_help(self):
-        QMessageBox.information(self, "Help & Shortcuts", 
-            "<b>Keyboard Shortcuts:</b><br>"
-            "<b>Ctrl + F</b>: Focus Filter<br>"
+        help_text = (
+            "<h3>General & Navigation</h3>"
+            "<b>Ctrl + F</b>: Focus Filter box.<br>"
             "<b>Up/Down Arrows</b>: Navigate tables and auto-update Image/Details Preview.<br>"
             "<b>Shift/Ctrl + Click (or Drag)</b>: Multi-select items. Status bar shows total size.<br>"
-            "<b>Enter</b>: Open selected folder or real file.<br><br>"
-            "<b>Sandbox Shortcuts:</b><br>"
-            "<b>Ctrl + C</b>: Copy item(s) in Sandbox (Supports folders recursively!)<br>"
-            "<b>Ctrl + X</b>: Cut item(s) in Sandbox<br>"
-            "<b>Ctrl + V</b>: Paste item(s) into current Sandbox Folder (Features Conflict Resolution)<br>"
-            "<b>Delete</b>: Remove selected from Sandbox<br><br>"
-            "<b>Notes:</b><br>"
-            "• 'Global Copies' counts instances of a file's hash globally across all drives.<br>"
-            "• Custom Icons: Place .png or .ico files in the 'icons' folder named by extension (e.g., 'jpg.png').<br>"
-            "• Internal Viewers: Double click images, txt/log files, or media files (requires codecs) to open natively without leaving the app.<br>"
-            "• True Multitasking: Start a playlist, press B to send the audio player to the background, and open photos in the main UI without stopping the music. Press Ctrl+M on the main app to restore hidden background players.<br>"
-            "• Media Keybinds: Normal Left/Right arrows now natively change files. Shift+Left/Right seeks through the audio track perfectly.<br>"
-            "• No More Annoying Resizing: The forced resize logic is removed. The window stays the size you want it.<br>"
-            "• Image Controls: Press F to flip horizontally, Shift+F to flip vertically, and S to start an Auto-play Slideshow."
+            "<b>Enter</b>: Open selected folder or real file externally.<br><br>"
+
+            "<h3>Drives Dashboard</h3>"
+            "<b>Smart Update</b>: Updates existing drives instantly by skipping hashes for untouched files.<br>"
+            "<b>Global Filter</b>: Locks the entire app (Search, Stats, Timeline) to your selected drives.<br>"
+            "<b>Comments</b>: Double-click the 'Comment' cell to add custom notes to any drive.<br><br>"
+
+            "<h3>Advanced Search</h3>"
+            "<b>Exclusions</b>: Use the 'Exclude' fields to ignore specific words or extensions.<br>"
+            "<b>Smart Post-Filter</b>: After searching, a popup lets you quickly uncheck extensions you want to hide.<br><br>"
+
+            "<h3>Sandbox Shortcuts</h3>"
+            "<b>Ctrl + C / X / V</b>: Copy, Cut, Paste items (Supports folders recursively, features Conflict Resolution).<br>"
+            "<b>Delete</b>: Remove selected from Sandbox.<br><br>"
+
+            "<h3>Advanced Internal Viewer (General)</h3>"
+            "<b>Left / Right</b> or <b>PgUp / PgDn</b>: Previous / Next file.<br>"
+            "<b>F11</b>: True borderless Fullscreen.<br>"
+            "<b>Esc</b>: Exit Fullscreen / Close viewer.<br>"
+            "<b>H</b>: Hide/Show the bottom tool panel.<br>"
+            "<b>B</b>: Send to background (Hide viewer but keep media playing). Restore with Ctrl+M on main app.<br>"
+            "<b>S</b>: Toggle Slideshow / Vertical Auto-Scroll.<br><br>"
+
+            "<h3>Internal Viewer (Images & Documents)</h3>"
+            "<b>Ctrl + Scroll Wheel</b> or <b>+ / -</b>: Mouse-anchored Zoom In/Out.<br>"
+            "<b>0</b>: Reset View to Original Size.<br>"
+            "<b>W</b>: Fit to Width (Perfect for vertical reading/webtoon scrolling).<br>"
+            "<b>R</b>: Rotate 90°.<br>"
+            "<b>F</b> / <b>Shift+F</b>: Flip Horizontally / Vertically.<br>"
+            "<i>Tip: Left-click and drag to pan smoothly around zoomed images.</i><br><br>"
+
+            "<h3>Internal Viewer (Media Player)</h3>"
+            "<b>Space</b>: Play / Pause.<br>"
+            "<b>Shift + Left / Right</b>: Seek backward/forward 5 seconds.<br>"
+            "<b>Up / Down</b>: Volume Up / Down.<br>"
+            "<b>M</b>: Mute / Unmute.<br><br>"
+
+            "<h3>Notes</h3>"
+            "• <b>Global Copies</b> counts instances of a file's hash globally across all drives.<br>"
+            "• <b>Custom Icons</b>: Place .png or .ico files in the 'icons' folder named by extension (e.g., 'jpg.png')."
         )
+        
+        # Create a custom scrollable dialog
+        help_dialog = QDialog(self)
+        help_dialog.setWindowTitle("Help, Features & Shortcuts")
+        help_dialog.resize(600, 500)  # Keeps the window at a fixed, reasonable size
+        
+        layout = QVBoxLayout(help_dialog)
+        
+        # Use QTextBrowser to support rich HTML text and automatic scrollbars
+        text_browser = QTextBrowser()
+        text_browser.setHtml(help_text)
+        text_browser.setStyleSheet("font-size: 13px; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #333; padding: 10px;")
+        
+        close_btn = QPushButton("Close")
+        close_btn.setStyleSheet("QPushButton { background-color: #0e639c; color: white; padding: 6px; border-radius: 4px; font-weight: bold; } QPushButton:hover { background-color: #1177bb; }")
+        close_btn.clicked.connect(help_dialog.accept)
+        
+        layout.addWidget(text_browser)
+        layout.addWidget(close_btn)
+        
+        help_dialog.exec()
 
     # ---------- Global Data Methods ----------
     def scan_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select folder to scan")
         if not folder: 
             return
+        
         drive_name, ok = QInputDialog.getText(self, "Drive name", "Short name for this drive:")
         if not ok or not drive_name.strip(): 
             return
+            
+        # Safety Check: Prevent accidental overwrite of an existing drive
+        cur = self.db.conn.cursor()
+        cur.execute("SELECT drive_name FROM drives WHERE drive_name = ?", (drive_name.strip(),))
+        if cur.fetchone():
+            if QMessageBox.question(self, "Drive Exists", f"A drive named '{drive_name.strip()}' already exists. Overwrite completely?\n\n(Tip: Use 'Update Selected Drive' instead to preserve hashes and comments!)", QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+                return
+        
         purchase, _ = QInputDialog.getText(self, "Purchase date", "Purchase date (MM/YYYY or YYYY-MM-DD) — optional:")
         csha = QMessageBox.question(self, "SHA256", "Compute SHA-256 for files? (slower)", QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes
+        
+        # New Feature: Ask if user wants a CSV backup
+        save_csv = QMessageBox.question(self, "Save CSV Backup", "Do you want to save a CSV backup for this scan?", QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes
+        
+        # Wipe old drive records to prevent duplicate SQL rows
+        self.db.delete_drive(drive_name.strip())
         
         dlg = QProgressDialog("Scanning...", "Cancel", 0, 100, self)
         dlg.setWindowModality(Qt.WindowModal)
         dlg.show()
         
-        t = ScanThread(folder, drive_name.strip(), purchase.strip(), csha, workers=max(1, min(32, (os.cpu_count() or 2) * 2)), parent=self)
+        t = ScanThread(folder, drive_name.strip(), purchase.strip(), csha, workers=max(1, min(32, (os.cpu_count() or 2) * 2)), write_csv=save_csv, parent=self)
         t.progress.connect(dlg.setValue)
         t.error.connect(lambda msg: (dlg.close(), QMessageBox.critical(self, "Scan error", str(msg))))
         t.finished.connect(lambda cp, dn, pd: (dlg.close(), self.db.insert_drive(dn, pd, cp), self.refresh_all(), QMessageBox.information(self, "Done", f"Scanned drive '{dn}'")))
@@ -974,14 +1134,18 @@ class DriveExplorerWindow(QMainWindow):
     def import_csvs(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Select CSVs", str(CSV_DIR), "CSV files (*.csv)")
         for f in files:
-            dname = Path(f).stem
-            if QMessageBox.question(self, "Import", f"Import '{f}' as '{dname}'?", QMessageBox.Yes|QMessageBox.No) == QMessageBox.Yes:
-                dlg = QProgressDialog(f"Importing {dname}...", "Cancel", 0, 0, self)
-                dlg.show()
-                t = ImportThread(f, dname, parent=self)
-                t.progress.connect(lambda n: dlg.setLabelText(f"Inserted: {n}"))
-                t.error.connect(lambda msg: (dlg.close(), QMessageBox.critical(self, "Error", str(msg))))
-                t.finished.connect(lambda cnt, dn: (dlg.close(), self.refresh_all(), QMessageBox.information(self, "Done", f"Imported {cnt} rows for {dn}")))
+            default_dname = Path(f).stem
+            dlg = ImportDetailsDialog(default_dname, self)
+            if dlg.exec():
+                dname, pdate, comment = dlg.get_data()
+                if not dname: continue
+                
+                pdlg = QProgressDialog(f"Importing data to '{dname}'...", "Cancel", 0, 0, self)
+                pdlg.show()
+                t = ImportThread(f, dname, pdate, comment, parent=self)
+                t.progress.connect(lambda n: pdlg.setLabelText(f"Inserted: {n} files"))
+                t.error.connect(lambda msg: (pdlg.close(), QMessageBox.critical(self, "Error", str(msg))))
+                t.finished.connect(lambda cnt, dn: (pdlg.close(), self.refresh_all(), QMessageBox.information(self, "Done", f"Successfully imported {cnt} records into {dn}.")))
                 self._register_worker(t)
                 t.start()
 
@@ -1071,37 +1235,41 @@ class DriveExplorerWindow(QMainWindow):
             dlg.close()
 
     def refresh_drives(self):
+        self.drives_table.blockSignals(True)
         self.drives_table.setSortingEnabled(False)
         self.drives_table.setRowCount(0)
-        self.ex_drive.blockSignals(True)
-        self.ex_drive.clear()
-        self.ex_drive.addItem("Any Drive")
-        self.as_drive.blockSignals(True)
-        self.as_drive.clear()
-        self.as_drive.addItem("Any Drive")
-        self.stat_drive.blockSignals(True)
-        self.stat_drive.clear()
-        self.stat_drive.addItem("Any Drive")
         
-        self.fast_drive.blockSignals(True)
-        self.fast_drive.clear()
-        self.fast_drive.addItem("Any Drive")        
+        self.ex_drive.blockSignals(True); self.ex_drive.clear(); self.ex_drive.addItem("Any Drive")
+        self.as_drive.blockSignals(True); self.as_drive.clear(); self.as_drive.addItem("Any Drive")
+        self.stat_drive.blockSignals(True); self.stat_drive.clear(); self.stat_drive.addItem("Any Drive")
+        self.fast_drive.blockSignals(True); self.fast_drive.clear(); self.fast_drive.addItem("Any Drive")
+        self.diary_drive.blockSignals(True); self.diary_drive.clear(); self.diary_drive.addItem("Any Drive")
         
-        self.diary_drive.blockSignals(True)
-        self.diary_drive.clear()
-        self.diary_drive.addItem("Any Drive")
-
         summary = self.db.drives_summary()
         self.drives_table.setRowCount(len(summary))
         self.load_fast_directory("")
         
-        for row, (drive_name, purchase_date, scanned_at, csv_path, file_count, total_size) in enumerate(summary):
+        def _make_readonly_item(text, sort_val):
+            it = SmartTableItem(text, sort_val)
+            it.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled) # Locks the cell from editing
+            return it
+            
+        for row, (drive_name, purchase_date, scanned_at, csv_path, comment, file_count, total_size) in enumerate(summary):
             age_str, age_days = age_from_date(parse_purchase_date(purchase_date))
+            
+            # FIX: Restore the combo-box population
             self.ex_drive.addItem(drive_name)
             self.as_drive.addItem(drive_name)
             self.stat_drive.addItem(drive_name)
             self.fast_drive.addItem(drive_name)
             self.diary_drive.addItem(drive_name)
+            
+            # User Friendly Date Format
+            try:
+                dt = datetime.fromisoformat(scanned_at)
+                scan_str = dt.strftime("%b %d, %Y - %I:%M %p") # e.g. July 23, 2026 - 08:33 PM
+            except:
+                scan_str = str(scanned_at)
             
             chk_widget = QWidget()
             chk_layout = QHBoxLayout(chk_widget)
@@ -1109,29 +1277,107 @@ class DriveExplorerWindow(QMainWindow):
             chk_layout.setAlignment(Qt.AlignCenter)
             chk_box = QCheckBox()
             chk_box.setProperty("drive_name", drive_name)
+            chk_box.setChecked(drive_name in self.global_drive_filter)
             chk_box.toggled.connect(self.update_selected_label)
             chk_layout.addWidget(chk_box)
             
             self.drives_table.setCellWidget(row, 0, chk_widget)
-            self.drives_table.setItem(row, 1, SmartTableItem(str(drive_name), str(drive_name).lower()))
-            self.drives_table.setItem(row, 2, SmartTableItem(str(file_count), file_count))
-            self.drives_table.setItem(row, 3, SmartTableItem(human_size(total_size), total_size))
-            self.drives_table.setItem(row, 4, SmartTableItem(age_str, age_days))
-            self.drives_table.setItem(row, 5, SmartTableItem(str(scanned_at), str(scanned_at)))
-            self.fast_drive.blockSignals(False)
+            self.drives_table.setItem(row, 1, _make_readonly_item(str(drive_name), str(drive_name).lower()))
+            self.drives_table.setItem(row, 2, _make_readonly_item(str(file_count), file_count))
+            self.drives_table.setItem(row, 3, _make_readonly_item(human_size(total_size), total_size))
+            self.drives_table.setItem(row, 4, _make_readonly_item(age_str, age_days))
+            self.drives_table.setItem(row, 5, _make_readonly_item(scan_str, scanned_at))
             
-        self.drives_table.setColumnWidth(0, 50)
-        self.drives_table.setColumnWidth(1, 200)
-        self.drives_table.setColumnWidth(2, 120)
-        self.drives_table.setColumnWidth(3, 120)
+            # Editable Comment Column
+            comment_item = QTableWidgetItem(str(comment) if comment else "")
+            comment_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsEditable) # Allows editing
+            comment_item.setData(Qt.UserRole, drive_name) # Safe retrieval identifier
+            self.drives_table.setItem(row, 6, comment_item)
+            
+        self.drives_table.setColumnWidth(0, 50); self.drives_table.setColumnWidth(1, 150)
+        self.drives_table.setColumnWidth(6, 300) # Give comments more room
         
         self.ex_drive.blockSignals(False)
         self.as_drive.blockSignals(False)
         self.stat_drive.blockSignals(False)
+        self.fast_drive.blockSignals(False)
         self.diary_drive.blockSignals(False)
+        
         self.drives_table.setSortingEnabled(True)
+        self.drives_table.blockSignals(False)
         self.update_selected_label()
-        self.refresh_diary_data()
+        
+    def on_drive_comment_changed(self, row, col):
+        if col == 6: # Comment column
+            item = self.drives_table.item(row, col)
+            drive_name = item.data(Qt.UserRole)
+            self.db.update_drive_comment(drive_name, item.text())
+
+    def apply_global_drive_filter(self):
+        sel_items = self.selected_drives()
+        self.global_drive_filter = list(sel_items)
+        msg = f"Applied Global Filter. Now showing data strictly for {len(sel_items)} drives." if sel_items else "Cleared Global Filter. Showing all drives."
+        QMessageBox.information(self, "Global Filter", msg)
+        self.refresh_all()
+        
+    def update_selected_drive(self):
+        sel_items = self.selected_drives()
+        if len(sel_items) != 1: 
+            return QMessageBox.warning(self, "Update", "Please select exactly ONE drive to update.")
+        
+        drive_name = sel_items[0]
+        folder = QFileDialog.getExistingDirectory(self, f"Select the physical folder for pendrive '{drive_name}' to sync against")
+        if not folder: return
+        
+        # New Feature: Ask if user wants a CSV backup
+        save_csv = QMessageBox.question(self, "Export CSV Backup", "Do you want to save a CSV backup of this update?", QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes
+
+        dlg = QProgressDialog("Analyzing differences (Reading Fast Hashes)...", "Cancel", 0, 0, self)
+        dlg.show()
+        
+        cur = self.db.conn.cursor()
+        
+        # 1. Fetch current known files for smart hashing
+        cur.execute("SELECT relpath, size, modified, sha FROM files WHERE drive = ? AND is_folder=0", (drive_name,))
+        existing_files = {r[0]: (r[1], r[2], r[3]) for r in cur.fetchall()}
+        
+        # 2. Fetch existing metadata to preserve Age and Comments
+        cur.execute("SELECT purchase_date, comment FROM drives WHERE drive_name = ?", (drive_name,))
+        meta_row = cur.fetchone()
+        old_purchase_date = meta_row[0] if meta_row and meta_row[0] else ""
+        old_comment = meta_row[1] if meta_row and meta_row[1] else ""
+        
+        # 3. CRITICAL: Delete old drive data before scan starts to prevent duplicating rows in SQL.
+        # We no longer rely on the CSV file to re-import data, the Thread pushes directly to SQL.
+        self.db.delete_drive(drive_name)
+        
+        dlg.close()
+        
+        scan_dlg = QProgressDialog(f"Updating '{drive_name}' (Skipping unmodified files)...", "Cancel", 0, 100, self)
+        scan_dlg.show()
+        
+        # Pass the write_csv preference to the thread
+        t = ScanThread(folder, drive_name, old_purchase_date, True, workers=max(1, min(32, (os.cpu_count() or 2) * 2)), write_csv=save_csv, update_map=existing_files, parent=self)
+        t.progress.connect(scan_dlg.setValue)
+        
+        def finish_update(cp, dn, pd):
+            scan_dlg.close()
+            
+            # Manually restore the drive record with BOTH the preserved purchase date AND comment
+            cur = self.db.conn.cursor()
+            cur.execute(
+                "INSERT OR REPLACE INTO drives (drive_name, purchase_date, scanned_at, csv_path, comment) VALUES (?, ?, ?, ?, ?);",
+                (dn, pd, datetime.now().isoformat(), cp, old_comment)
+            )
+            self.db.conn.commit()
+            
+            self.refresh_all()
+            QMessageBox.information(self, "Done", f"Smart Update for '{dn}' completed successfully.\nReused hashes for unmodified files. (Age and Comments preserved).")
+            
+        t.finished.connect(finish_update)
+        t.error.connect(lambda msg: (scan_dlg.close(), QMessageBox.critical(self, "Scan error", str(msg))))
+        self._register_worker(t)
+        t.start()
 
     def update_selected_label(self):
         self.selected_label.setText(f"{len(self.selected_drives())} selected")
@@ -1166,20 +1412,29 @@ class DriveExplorerWindow(QMainWindow):
             return QMessageBox.information(self, "Delete drive", "Check a drive in the table to delete.")
         
         names = ", ".join(sel_items)
-        if QMessageBox.question(self, "Delete drives", f"Delete drives and records?\n{names}", QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes: 
+        if QMessageBox.question(self, "Delete drives", f"Delete all database records for these drives?\n{names}", QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes: 
             return
         
+        # Move associated physical CSVs first
         cur = self.db.conn.cursor()
         for dname in sel_items:
             cur.execute("SELECT csv_path FROM drives WHERE drive_name = ?", (dname,))
             res = cur.fetchone()
             if res and res[0] and os.path.exists(res[0]):
-                try: 
-                    shutil.move(res[0], OLD_DATA_DIR / Path(res[0]).name)
-                except Exception: 
-                    pass
-            self.db.delete_drive(dname)
-        self.refresh_all()
+                try: shutil.move(res[0], OLD_DATA_DIR / Path(res[0]).name)
+                except Exception: pass
+                
+        self.del_dlg = QProgressDialog("Initializing deletion...", "Cancel", 0, 100, self)
+        self.del_dlg.setWindowModality(Qt.WindowModal)
+        self.del_dlg.show()
+        
+        self.del_thread = DeleteDriveThread(sel_items, DB_FILE, self)
+        self.del_thread.progress.connect(lambda val, txt: (self.del_dlg.setValue(val), self.del_dlg.setLabelText(txt)))
+        self.del_thread.finished.connect(lambda: (self.del_dlg.close(), self.refresh_all(), QMessageBox.information(self, "Deleted", "Drive data successfully removed.")))
+        self.del_thread.error.connect(lambda e: (self.del_dlg.close(), QMessageBox.critical(self, "Error", f"Deletion failed: {e}")))
+        
+        self._register_worker(self.del_thread)
+        self.del_thread.start()
 
     def update_charts(self):
         if not MATPLOTLIB_AVAILABLE or not PANDAS_AVAILABLE or not self.figure: 
@@ -1920,9 +2175,9 @@ class DriveExplorerWindow(QMainWindow):
     def _get_global_file_info(self, name, size, sha=None):
         cur = self.db.conn.cursor()
         if sha: 
-            cur.execute("SELECT drive, fullpath, size, sha FROM files WHERE sha = ?;", (sha,))
+            cur.execute("SELECT drive, fullpath, relpath, size, sha FROM files WHERE sha = ?;", (sha,))
         else: 
-            cur.execute("SELECT drive, fullpath, size, sha FROM files WHERE name = ? AND size = ?;", (name, size))
+            cur.execute("SELECT drive, fullpath, relpath, size, sha FROM files WHERE name = ? AND size = ?;", (name, size))
         return cur.fetchall()
 
     def on_file_click(self, index: QModelIndex):
@@ -1935,7 +2190,7 @@ class DriveExplorerWindow(QMainWindow):
         
         self.preview_image.clear()
         if typ == "folder": 
-            self.preview_text.setHtml(self._format_preview_html(row_data["display"], f"Folder: {row_data['display'][1]}", payload, []))
+            self.preview_text.setHtml(self._format_preview_html(row_data["display"], model.headers, f"Folder: {row_data['display'][1]}", payload, []))
             return
             
         cur = self.db.conn.cursor()
@@ -1949,11 +2204,11 @@ class DriveExplorerWindow(QMainWindow):
 
         if not rows: return
         
-        html = self._format_preview_html(row_data["display"], f"File: {row_data['display'][1]}", payload, rows)
+        html = self._format_preview_html(row_data["display"], model.headers, f"File: {row_data['display'][1]}", payload, rows)
         self.preview_text.setHtml(html)
         
         sample = None
-        for d, full, size, sha in rows:
+        for d, full, rel, size, sha in rows:
             if not sample and full and os.path.exists(full) and os.path.splitext(full)[1].lower() in (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".ico"): 
                 sample = full
                 
@@ -2323,7 +2578,7 @@ class DriveExplorerWindow(QMainWindow):
         
         self.ms_preview_image.clear()
         if typ == "folder": 
-            self.ms_preview_text.setHtml(self._format_preview_html(row_data["display"], f"Virtual Folder: {row_data['display'][1]}", path, []))
+            self.ms_preview_text.setHtml(self._format_preview_html(row_data["display"], model.headers, f"Virtual Folder: {row_data['display'][1]}", path, []))
             return
             
         cur = self.db.conn.cursor()
@@ -2334,7 +2589,7 @@ class DriveExplorerWindow(QMainWindow):
         
         rows = self._get_global_file_info(n, size)
         
-        html = self._format_preview_html(row_data["display"], f"Sandbox File: {row_data['display'][1]}", self.current_myspace_prefix, rows)
+        html = self._format_preview_html(row_data["display"], model.headers, f"Sandbox File: {row_data['display'][1]}", self.current_myspace_prefix, rows)
         self.ms_preview_text.setHtml(html)
         
         if real_path and os.path.exists(real_path) and str(ext).lower() in (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".ico"):
@@ -2795,22 +3050,31 @@ class DriveExplorerWindow(QMainWindow):
         item_type = self.as_type.currentText()
         folder = self.as_folder.text().strip()
         ext = self.as_ext.text().strip()
-        drive = self.as_drive.currentText()
+        
+        exclude_text = self.as_exclude_text.text().strip()
+        exclude_ext = self.as_exclude_ext.text().strip()
+        
         min_sz = self.as_min_size.text().strip()
         max_sz = self.as_max_size.text().strip()
         d_from = self.as_date_from.date().toString("yyyy-MM-dd")
         d_to = self.as_date_to.date().toString("yyyy-MM-dd") + "T23:59:59"
         
-        params = []
+        drive_sql, params = self._get_drive_sql(self.as_drive)
+        
         if item_type == "Folders Only":
-            query = """
+            # FIXED folder search: no longer groups by MAX(modified) which breaks the WHERE filter on child files.
+            query = f"""
             SELECT DISTINCT 
                 CASE WHEN is_folder = 1 THEN relpath ELSE SUBSTR(relpath, 1, LENGTH(relpath) - LENGTH(COALESCE(name, ''))) END AS rp,
-                '' AS n, 0 AS s, 'Folder' AS e, MAX(modified) AS m, drive AS d, 
+                '' AS n, 0 AS s, 'Folder' AS e, '' AS m, drive AS d, 
                 CASE WHEN is_folder = 1 THEN fullpath ELSE SUBSTR(fullpath, 1, LENGTH(fullpath) - LENGTH(COALESCE(name, ''))) END AS fp,
                 1 AS is_f
-            FROM files WHERE 1=1
+            FROM files WHERE 1=1 {drive_sql}
             """
+            # Date filter explicitly applied to folders themselves if they exist
+            query += " AND (is_folder = 0 OR (modified >= ? AND modified <= ?))"
+            params.extend([d_from, d_to])
+            
             if folder:
                 folder_clean = folder.replace("\\", "/")
                 query += " AND (CASE WHEN is_folder = 1 THEN relpath ELSE SUBSTR(relpath, 1, LENGTH(relpath) - LENGTH(COALESCE(name, ''))) END) LIKE ?"
@@ -2818,51 +3082,49 @@ class DriveExplorerWindow(QMainWindow):
             if name:
                 query += " AND (CASE WHEN is_folder = 1 THEN relpath ELSE SUBSTR(relpath, 1, LENGTH(relpath) - LENGTH(COALESCE(name, ''))) END) LIKE ?"
                 params.append(f"%{name}%")
-            if drive and drive != "Any Drive":
-                query += " AND drive = ?"
-                params.append(drive)
-            query += " GROUP BY rp, d"
         else:
-            query = "SELECT relpath, name, size, extension, modified, drive, fullpath, is_folder FROM files WHERE 1=1"
-            if item_type == "Files Only": 
-                query += " AND is_folder = 0"
+            query = f"SELECT relpath, name, size, extension, modified, drive, fullpath, is_folder FROM files WHERE 1=1 {drive_sql}"
+            if item_type == "Files Only": query += " AND is_folder = 0"
+            
             if name:
-                if match_type == "Contains": 
-                    query += " AND name LIKE ?"; params.append(f"%{name}%")
-                elif match_type == "Exact Match": 
-                    query += " AND name = ?"; params.append(name)
-                elif match_type == "Starts With": 
-                    query += " AND name LIKE ?"; params.append(f"{name}%")
-                elif match_type == "Ends With": 
-                    query += " AND name LIKE ?"; params.append(f"%{name}")
+                if match_type == "Contains": query += " AND name LIKE ?"; params.append(f"%{name}%")
+                elif match_type == "Exact Match": query += " AND name = ?"; params.append(name)
+                elif match_type == "Starts With": query += " AND name LIKE ?"; params.append(f"{name}%")
+                elif match_type == "Ends With": query += " AND name LIKE ?"; params.append(f"%{name}")
+            
+            if exclude_text:
+                for word in exclude_text.split(','):
+                    query += " AND name NOT LIKE ?"
+                    params.append(f"%{word.strip()}%")
+                    
             if folder: 
                 folder_clean = folder.replace("\\", "/")
                 query += " AND SUBSTR(relpath, 1, LENGTH(relpath) - LENGTH(COALESCE(name, ''))) LIKE ?"
                 params.append(f"%{folder_clean}%")
-            if drive and drive != "Any Drive": 
-                query += " AND drive = ?"
-                params.append(drive)
+                
             if ext: 
                 if not ext.startswith("."): ext = "." + ext
                 query += " AND extension = ?"
                 params.append(ext.lower())
+                
+            if exclude_ext:
+                for ex in exclude_ext.split(','):
+                    e = ex.strip().lower()
+                    if not e.startswith('.'): e = '.' + e
+                    query += " AND extension != ?"
+                    params.append(e)
+                
             if min_sz:
-                try: 
-                    query += " AND size >= ?"
-                    params.append(int(float(min_sz) * 1024 * 1024))
-                except Exception: 
-                    pass
+                try: query += " AND size >= ?"; params.append(int(float(min_sz) * 1024 * 1024))
+                except: pass
             if max_sz:
-                try: 
-                    query += " AND size <= ?"
-                    params.append(int(float(max_sz) * 1024 * 1024))
-                except Exception: 
-                    pass
+                try: query += " AND size <= ?"; params.append(int(float(max_sz) * 1024 * 1024))
+                except: pass
+                
             query += " AND modified >= ? AND modified <= ?"
             params.extend([d_from, d_to])
             
         self.search_dlg = QProgressDialog("Advanced Searching... Please wait.", "Cancel", 0, 0, self)
-        self.search_dlg.setWindowModality(Qt.WindowModal)
         self.search_dlg.show()
         
         self.search_thread = SearchThread(DB_FILE, query, params, self)
@@ -2870,10 +3132,9 @@ class DriveExplorerWindow(QMainWindow):
             self.search_thread.finished.connect(lambda rows: self._on_advanced_folder_search_done(rows, folder, name, match_type))
         else: 
             self.search_thread.finished.connect(self._on_advanced_search_done)
-            
-        self.search_thread.error.connect(self._on_search_error)
-        self.search_dlg.canceled.connect(self.search_thread.cancel)
         self.search_thread.start()
+
+
 
     def _on_advanced_folder_search_done(self, rows, target_folder, target_name, match_type):
         if self.search_dlg: 
@@ -2919,8 +3180,17 @@ class DriveExplorerWindow(QMainWindow):
         self._render_search_results(processed_rows)
 
     def _on_advanced_search_done(self, rows):
-        if self.search_dlg: 
-            self.search_dlg.close()
+        if self.search_dlg: self.search_dlg.close()
+        
+        # Extract unique extensions for the popup
+        found_exts = set(r[3].lower() if r[3] else "[No Extension]" for r in rows if r[7] == 0)
+        
+        if found_exts and len(found_exts) > 1:
+            dlg = ExtFilterDialog(found_exts, self)
+            if dlg.exec():
+                excluded = dlg.get_excluded()
+                rows = [r for r in rows if r[7] == 1 or (r[3].lower() if r[3] else "[No Extension]") not in excluded]
+
         self.status.showMessage(f"Search Complete: Found {len(rows)} items.", 5000)
         self._render_search_results(rows)
 
@@ -2980,20 +3250,24 @@ class DriveExplorerWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to export: {e}")
 
     def on_as_click(self, index: QModelIndex):
-        self.on_as_double_click(index, preview_only=True)
+        # We must figure out which table called this to get the right model
+        table = self.sender() if isinstance(self.sender(), QTableView) else self.as_table
+        self.on_as_double_click(index, preview_only=True, table_source=table)
         
-    def on_as_double_click(self, index: QModelIndex, preview_only=False):
-        model = self.as_table.model()
+    def on_as_double_click(self, index: QModelIndex, preview_only=False, table_source=None):
+        table = table_source or self.sender() if isinstance(self.sender(), QTableView) else self.as_table
+        model = table.model()
         if not model: return
-        real_path = model.filtered_rows[index.row()]["user_data_1"]
-        is_f = model.filtered_rows[index.row()]["user_data_2"]
-        if preview_only: 
-            return
+        
+        real_path = model.filtered_rows[index.row()].get("user_data_1", "")
+        is_f = model.filtered_rows[index.row()].get("user_data_2", False)
+        
+        if preview_only: return
             
         if is_f: 
             QMessageBox.information(self, "Folder Record", f"Database Path:\n{real_path}")
         else:
-            self.open_local_file("", self.as_table, index.row())
+            self.open_local_file("", table, index.row())
 
     # ---------- Comparisons ----------
     def compare_selected(self):
@@ -3309,3 +3583,15 @@ class DriveExplorerWindow(QMainWindow):
         except Exception: 
             pass
         super().closeEvent(ev)
+        
+    def _get_drive_sql(self, combo_box, table_prefix="") -> Tuple[str, list]:
+        """Returns the SQL clause and params for the given combobox, honoring Global Filters."""
+        target = combo_box.currentText()
+        prefix = f"{table_prefix}." if table_prefix else ""
+        if target == "Any Drive":
+            if self.global_drive_filter:
+                placeholders = ",".join("?" for _ in self.global_drive_filter)
+                return f"AND {prefix}drive IN ({placeholders})", list(self.global_drive_filter)
+            return "", []
+        return f"AND {prefix}drive = ?", [target]        
+        
