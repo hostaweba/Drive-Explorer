@@ -21,16 +21,18 @@ class CatalogDB:
 
     def _ensure_schema(self):
         c = self.conn.cursor()
-        c.execute("CREATE TABLE IF NOT EXISTS drives (id INTEGER PRIMARY KEY, drive_name TEXT UNIQUE, purchase_date TEXT, scanned_at TEXT, csv_path TEXT);")
+        c.execute("CREATE TABLE IF NOT EXISTS drives (id INTEGER PRIMARY KEY, drive_name TEXT UNIQUE, purchase_date TEXT, scanned_at TEXT, csv_path TEXT, comment TEXT DEFAULT '');")
         c.execute("CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY, relpath TEXT, name TEXT, size INTEGER, extension TEXT, modified TEXT, sha TEXT, drive TEXT, fullpath TEXT, is_folder INTEGER DEFAULT 0);")
         c.execute("CREATE TABLE IF NOT EXISTS myspace (id INTEGER PRIMARY KEY, parent_path TEXT, name TEXT, is_folder INTEGER, real_path TEXT, size INTEGER, extension TEXT, modified TEXT);")
         
-        try: 
-            c.execute("ALTER TABLE files ADD COLUMN is_folder INTEGER DEFAULT 0;")
-        except sqlite3.OperationalError: 
-            pass
+        # Gracefully add columns to existing databases without breaking
+        try: c.execute("ALTER TABLE files ADD COLUMN is_folder INTEGER DEFAULT 0;")
+        except sqlite3.OperationalError: pass
+        
+        try: c.execute("ALTER TABLE drives ADD COLUMN comment TEXT DEFAULT '';")
+        except sqlite3.OperationalError: pass
             
-        # Creates highly optimized indexes gracefully on existing databases
+        # Creates highly optimized indexes gracefully
         c.execute("CREATE INDEX IF NOT EXISTS idx_files_relpath ON files(relpath);")
         c.execute("CREATE INDEX IF NOT EXISTS idx_files_name ON files(name);")
         c.execute("CREATE INDEX IF NOT EXISTS idx_files_sha ON files(sha);")
@@ -42,11 +44,21 @@ class CatalogDB:
         c.execute("CREATE INDEX IF NOT EXISTS idx_files_drive_ext ON files(drive, extension);")
         self.conn.commit()
 
-    def insert_drive(self, drive_name: str, purchase_date: str, csv_path: str = ""):
-        self.conn.cursor().execute(
-            "INSERT OR REPLACE INTO drives (drive_name,purchase_date,scanned_at,csv_path) VALUES (?,?,?,?);",
-            (drive_name, purchase_date or "", datetime.now().isoformat(), csv_path or "")
+    def insert_drive(self, drive_name: str, purchase_date: str, csv_path: str = "", comment: str = ""):
+        # Check if drive exists to preserve comment if updating
+        cur = self.conn.cursor()
+        cur.execute("SELECT comment FROM drives WHERE drive_name = ?", (drive_name,))
+        row = cur.fetchone()
+        existing_comment = row[0] if row else comment
+        
+        cur.execute(
+            "INSERT OR REPLACE INTO drives (drive_name,purchase_date,scanned_at,csv_path,comment) VALUES (?,?,?,?,?);",
+            (drive_name, purchase_date or "", datetime.now().isoformat(), csv_path or "", existing_comment)
         )
+        self.conn.commit()
+
+    def update_drive_comment(self, drive_name: str, comment: str):
+        self.conn.cursor().execute("UPDATE drives SET comment = ? WHERE drive_name = ?", (comment, drive_name))
         self.conn.commit()
 
     def import_csv(self, csv_path: Path, drive_name: str, progress_callback=None) -> int:
@@ -58,8 +70,7 @@ class CatalogDB:
             rdr = csv.reader(fh)
             next(rdr, None) 
             for row in rdr:
-                if not row: 
-                    continue
+                if not row: continue
                 relpath = row[0]
                 name = row[1] if len(row) > 1 and row[1] else os.path.basename(relpath)
                 size = int(row[2]) if len(row) > 2 and row[2] else 0
@@ -76,8 +87,7 @@ class CatalogDB:
                     self.conn.commit()
                     inserted += len(batch)
                     batch.clear()
-                    if progress_callback: 
-                        progress_callback(inserted)
+                    if progress_callback: progress_callback(inserted)
             if batch:
                 cur.executemany("INSERT INTO files (relpath,name,size,extension,modified,sha,drive,fullpath,is_folder) VALUES (?,?,?,?,?,?,?,?,?);", batch)
                 self.conn.commit()
@@ -96,7 +106,7 @@ class CatalogDB:
 
     def drives_summary(self) -> List[Tuple]:
         cur = self.conn.cursor()
-        cur.execute("SELECT d.drive_name, d.purchase_date, d.scanned_at, d.csv_path, COUNT(f.id) as file_count, COALESCE(SUM(f.size),0) as total_size FROM drives d LEFT JOIN files f ON f.drive = d.drive_name WHERE f.is_folder = 0 OR f.is_folder IS NULL GROUP BY d.drive_name ORDER BY d.scanned_at DESC;")
+        cur.execute("SELECT d.drive_name, d.purchase_date, d.scanned_at, d.csv_path, d.comment, COUNT(f.id) as file_count, COALESCE(SUM(f.size),0) as total_size FROM drives d LEFT JOIN files f ON f.drive = d.drive_name WHERE f.is_folder = 0 OR f.is_folder IS NULL GROUP BY d.drive_name ORDER BY d.scanned_at DESC;")
         return cur.fetchall()
 
     def delete_drive(self, drive_name: str):
@@ -107,7 +117,5 @@ class CatalogDB:
         self.conn.execute("VACUUM;")
         
     def close(self):
-        try: 
-            self.conn.close()
-        except Exception: 
-            pass
+        try: self.conn.close()
+        except Exception: pass
